@@ -9,11 +9,19 @@
  * (running as root via cron) processes — that's the privilege boundary.
  */
 
+require_once __DIR__ . '/liveapi.php';
+
 $user = getenv('REMOTE_USER');
 if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
     http_response_code(403);
     die('Unable to determine cPanel user.');
 }
+
+// Opened before anything is printed: cPanel serves .live.php pages through
+// LiveAPI and expects the script to make that connection, and prints
+// "Child failed to make LIVEAPI connection to cPanel." under the page when
+// it doesn't. It is also what gives us cPanel's own sidebar and footer.
+$cpanel = liveapi_connect();
 
 $manifestFile = "/var/spool/skyserver-backup/manifests/{$user}.json";
 $backups = [];
@@ -23,57 +31,53 @@ if (is_readable($manifestFile)) {
 $latest = $backups[0] ?? null;
 $dbCount = $latest ? count($latest['databases'] ?? []) : 0;
 $restoreEnabled = file_exists("/var/spool/skyserver-backup/user-restore-enabled");
-?>
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Backup Manager</title>
-<style>
-  :root {
-    --blue: #2f6fed; --green: #1f9d55; --red: #d64545; --amber: #c98a1f;
-    --bg: #f4f6f9; --card: #ffffff; --border: #e3e7ee; --text: #24303f; --muted: #6b7688;
-  }
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         background: var(--bg); color: var(--text); margin: 0; padding: 24px; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
-  .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 24px; }
-  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-          padding: 14px 18px; min-width: 150px; }
-  .stat .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-  .stat .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-          margin-bottom: 20px; overflow: hidden; }
-  .card h2 { font-size: 14px; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--border);
-             background: #fafbfd; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 10px 18px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
-  tr:last-child td { border-bottom: none; }
-  .badge { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 11px; font-weight: 600; }
-  .badge-db { background: #eaf1ff; color: var(--blue); }
-  .btn { border: 1px solid var(--border); background: #fff; border-radius: 6px; padding: 6px 12px;
-         font-size: 12px; cursor: pointer; color: var(--text); }
-  .btn:hover { border-color: var(--blue); color: var(--blue); }
-  .btn:disabled { opacity: .5; cursor: default; }
-  .status-tag { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 99px; }
-  .status-queued  { background: #fff6e3; color: var(--amber); }
-  .status-running { background: #eaf1ff; color: var(--blue); }
-  .status-success { background: #e8f8ee; color: var(--green); }
-  .status-failed  { background: #fdeaea; color: var(--red); }
-  .empty { padding: 30px 18px; color: var(--muted); font-size: 13px; text-align: center; }
-  .notice { background: #fff6e3; border: 1px solid #f0dcb0; color: #8a6116;
-            padding: 11px 15px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
-  .brand { display: flex; align-items: center; gap: 13px; margin-bottom: 4px; }
-  .brand img { height: 38px; width: auto; max-width: 190px; display: block; }
-  .dl-link { font-size: 12px; font-weight: 600; color: var(--blue); text-decoration: none; }
-</style>
-</head>
-<body>
 
+// Every rule is scoped under .sky. Inside cPanel's own page, bare selectors
+// like table, th or h1 would restyle cPanel's chrome along with ours.
+$SKY_STYLES = <<<'CSS'
+<style>
+  .sky { --blue: #2f6fed; --green: #1f9d55; --red: #d64545; --amber: #c98a1f;
+         --bg: #f4f6f9; --card: #ffffff; --border: #e3e7ee; --text: #24303f; --muted: #6b7688;
+         font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         color: var(--text); padding: 20px 0; }
+  .sky * { box-sizing: border-box; }
+  .sky h1 { font-size: 20px; margin: 0 0 4px; }
+  .sky .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .sky .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 24px; }
+  .sky .stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+          padding: 14px 18px; min-width: 150px; }
+  .sky .stat .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .sky .stat .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .sky .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+          margin-bottom: 20px; overflow: hidden; }
+  .sky .card h2 { font-size: 14px; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--border);
+             background: #fafbfd; }
+  .sky table { width: 100%; border-collapse: collapse; }
+  .sky th, .sky td { padding: 10px 18px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .sky th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .sky tr:last-child td { border-bottom: none; }
+  .sky .badge { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+  .sky .badge-db { background: #eaf1ff; color: var(--blue); }
+  .sky .btn { border: 1px solid var(--border); background: #fff; border-radius: 6px; padding: 6px 12px;
+         font-size: 12px; cursor: pointer; color: var(--text); }
+  .sky .btn:hover { border-color: var(--blue); color: var(--blue); }
+  .sky .btn:disabled { opacity: .5; cursor: default; }
+  .sky .status-tag { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 99px; }
+  .sky .status-queued  { background: #fff6e3; color: var(--amber); }
+  .sky .status-running { background: #eaf1ff; color: var(--blue); }
+  .sky .status-success { background: #e8f8ee; color: var(--green); }
+  .sky .status-failed  { background: #fdeaea; color: var(--red); }
+  .sky .empty { padding: 30px 18px; color: var(--muted); font-size: 13px; text-align: center; }
+  .sky .notice { background: #fff6e3; border: 1px solid #f0dcb0; color: #8a6116;
+            padding: 11px 15px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
+  .sky .brand { display: flex; align-items: center; gap: 13px; margin-bottom: 4px; }
+  .sky .brand img { height: 38px; width: auto; max-width: 190px; display: block; }
+  .sky .dl-link { font-size: 12px; font-weight: 600; color: var(--blue); text-decoration: none; }
+</style>
+CSS;
+
+ob_start();
+?>
 <div class="brand">
   <img src="https://ik.imagekit.io/hdmn/skybackupmanager.png" alt="SkyServer Backup Manager">
   <h1>Backup Manager</h1>
@@ -211,5 +215,28 @@ function poll(id, slot, btn) {
 }
 </script>
 
-</body>
-</html>
+<?php
+$body = ob_get_clean();
+
+// cPanel's chrome if LiveAPI gave us a document, our own page if it didn't —
+// the plugin stays usable on a server where the connection isn't available.
+$header = $cpanel ? (string) $cpanel->header('Backup Manager') : '';
+
+if (stripos($header, '<html') !== false) {
+    echo $header;
+    echo $SKY_STYLES;
+    echo '<div class="sky">' . $body . '</div>';
+    echo (string) $cpanel->footer();
+} else {
+    echo "<!DOCTYPE html>\n<html>\n<head>\n";
+    echo '<meta charset="utf-8">' . "\n";
+    echo '<meta name="viewport" content="width=device-width, initial-scale=1">' . "\n";
+    echo "<title>Backup Manager</title>\n";
+    echo $SKY_STYLES;
+    echo "<style>body { margin:0; padding:0 24px; background:#f4f6f9; }</style>\n";
+    echo "</head>\n<body>\n";
+    echo '<div class="sky">' . $body . '</div>';
+    echo "\n</body>\n</html>\n";
+}
+
+liveapi_end($cpanel);

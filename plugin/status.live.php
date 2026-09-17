@@ -4,6 +4,13 @@
  * status the logged-in user actually owns (checked against the "user"
  * field bin/restore-worker.sh writes into the status file).
  */
+require_once __DIR__ . '/liveapi.php';
+
+// Connected before a byte is printed, and closed however this script
+// exits — otherwise cPanel appends its LiveAPI complaint to the JSON.
+$cpanel = liveapi_connect();
+register_shutdown_function('liveapi_end', $cpanel);
+
 header('Content-Type: application/json');
 
 $user = getenv('REMOTE_USER');

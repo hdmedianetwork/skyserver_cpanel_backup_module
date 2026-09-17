@@ -42,15 +42,30 @@ cp "$INSTALL_DIR/etc/logrotate/skyserver-backup" /etc/logrotate.d/skyserver-back
 chmod 644 /etc/logrotate.d/skyserver-backup
 
 log "Installing cPanel end-user plugin into every theme..."
+
+# The menu tile should carry the real logo rather than a stand-in. ImageKit
+# will hand us a square version of it, so fetch that here and fall back to
+# the bundled icon on a server with no outbound access.
+ICON_SRC="$INSTALL_DIR/plugin/skyserver_backup.png"
+ICON_TMP="$(mktemp)"
+if curl -fsS --max-time 15 -o "$ICON_TMP" \
+     "https://ik.imagekit.io/hdmn/skybackupmanager.png?tr=w-48,h-48,cm-pad_resize" \
+   && head -c 8 "$ICON_TMP" | grep -qa PNG; then
+  ICON_SRC="$ICON_TMP"
+  log "  Menu icon taken from the SkyServer logo."
+else
+  log "  Could not fetch the logo — using the bundled menu icon."
+fi
+
 for THEME_DIR in "$FRONTEND_BASE"/*/; do
   [ -d "$THEME_DIR" ] || continue
   PLUGIN_DEST="${THEME_DIR}skyserver_backup"
   mkdir -p "$PLUGIN_DEST"
-  cp "$INSTALL_DIR"/plugin/*.live.php "$PLUGIN_DEST/"
+  cp "$INSTALL_DIR"/plugin/*.live.php "$INSTALL_DIR"/plugin/liveapi.php "$PLUGIN_DEST/"
   # Named after the descriptor's file=> key, which is where cPanel looks for
   # an imgtype=>icon item's image.
-  cp "$INSTALL_DIR"/plugin/skyserver_backup.png "$PLUGIN_DEST/"
-  chmod 644 "$PLUGIN_DEST"/*.live.php "$PLUGIN_DEST"/skyserver_backup.png
+  cp "$ICON_SRC" "$PLUGIN_DEST/skyserver_backup.png"
+  chmod 644 "$PLUGIN_DEST"/*.php "$PLUGIN_DEST"/skyserver_backup.png
 
   # The icon entry belongs in the theme's own dynamicui directory — that is
   # where cPanel reads menu items from. Without it the pages are served but
@@ -61,6 +76,8 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
      "${THEME_DIR}dynamicui/dynamicui_skyserver_backup.conf"
   chmod 644 "${THEME_DIR}dynamicui/dynamicui_skyserver_backup.conf"
 done
+rm -f "$ICON_TMP"
+
 mkdir -p "$DYNAMICUI_DIR"
 cp "$INSTALL_DIR/plugin/skyserver_backup.conf" "$DYNAMICUI_DIR/dynamicui_skyserver_backup.conf"
 chmod 644 "$DYNAMICUI_DIR/dynamicui_skyserver_backup.conf"

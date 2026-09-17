@@ -3,6 +3,13 @@
  * AJAX endpoint: queues a restore request for the logged-in cPanel user.
  * Returns JSON { ok: true, id: "..." } or { ok: false, error: "..." }.
  */
+require_once __DIR__ . '/liveapi.php';
+
+// Connected before a byte is printed, and closed however this script
+// exits — otherwise cPanel appends its LiveAPI complaint to the JSON.
+$cpanel = liveapi_connect();
+register_shutdown_function('liveapi_end', $cpanel);
+
 header('Content-Type: application/json');
 
 $user = getenv('REMOTE_USER');

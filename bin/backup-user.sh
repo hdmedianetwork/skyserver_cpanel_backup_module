@@ -67,6 +67,37 @@ FULL_SIZE="$(du -h "$ACCT_TARBALL" | cut -f1)"
 
 # 2. Separate per-database dumps, for granular restores that don't require
 #    rolling back the whole account.
+
+# The account's databases, one per line, from cPanel's view and MySQL's own.
+# Neither alone is enough: uapi needs cPanel's tooling reachable and the
+# account to have the MySQL feature, while the prefix query only knows the
+# <user>_<name> convention. A database missed here is one nobody notices is
+# unprotected, so take both and let the caller dedupe.
+list_databases() { # <cpanel_user>
+  local user="${1//[^a-zA-Z0-9]/}"
+  local uapi_bin out
+
+  uapi_bin="$(command -v uapi || true)"
+  [ -n "$uapi_bin" ] || uapi_bin="/usr/local/cpanel/bin/uapi"
+
+  if [ -x "$uapi_bin" ]; then
+    # Parsed as JSON: the human-readable output this used to be grepped for
+    # is not a format cPanel promises to keep.
+    if out="$("$uapi_bin" --user="$user" --output=jsonpretty Mysql list_databases 2>&1)"; then
+      printf '%s\n' "$out" | jq -r '.result.data[]?.database // empty' 2>/dev/null
+    else
+      echo "[!] uapi could not list databases for $user: $out" >&2
+    fi
+  else
+    echo "[!] uapi not found — using MySQL's own database list for $user" >&2
+  fi
+
+  # cPanel usernames cannot contain an underscore, so this prefix matches
+  # this account's databases and nobody else's.
+  mysql_cmd mysql --batch --skip-column-names \
+    -e "SHOW DATABASES LIKE '${user}\\_%'" 2>/dev/null || true
+}
+
 DB_LIST=()
 while IFS= read -r DB; do
   [ -z "$DB" ] && continue
@@ -78,7 +109,11 @@ while IFS= read -r DB; do
   fi
   DB_LIST+=("$DB")
   s3_upload "$DUMP" "backups/${USER}/${DATE}/databases/${DB}.sql.gz"
-done < <(uapi --user="$USER" Mysql list_databases 2>/dev/null | grep -oP '(?<=database: )\S+' || true)
+done < <(list_databases "$USER" | sort -u)
+
+if [ "${#DB_LIST[@]}" -eq 0 ]; then
+  echo "[*] No databases found for $USER — the account tarball is still a full backup."
+fi
 
 # 3. Update the per-user manifest that the cPanel plugin reads.
 MANIFEST_FILE="$MANIFEST_DIR/${USER}.json"

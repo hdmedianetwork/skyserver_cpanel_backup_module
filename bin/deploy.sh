@@ -64,6 +64,11 @@ chmod 750 "$WHM_CGI_DIR/index.cgi"
 # silent failure here means the WHM menu entry never appears, and the
 # reason is the only way to fix it.
 if [ -x /usr/local/cpanel/bin/register_appconfig ]; then
+  # Drop any previous registration first, so a changed descriptor (a fixed
+  # entryurl, say) actually takes effect instead of leaving the old menu
+  # entry in place.
+  /usr/local/cpanel/bin/unregister_appconfig skyserver_backup >/dev/null 2>&1 || true
+
   if REG_OUT="$(/usr/local/cpanel/bin/register_appconfig "$INSTALL_DIR/whm-plugin/skyserver_backup.appconfig" 2>&1)"; then
     log "  WHM plugin registered."
   else

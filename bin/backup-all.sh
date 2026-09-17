@@ -5,6 +5,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG="/var/log/skyserver-backup.log"
+LOCK_FILE="/var/spool/skyserver-backup/backup.lock"
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 200>"$LOCK_FILE"
+flock -n 200 || { echo "[!] Another backup run is already in progress — skipping." >> "$LOG"; exit 1; }
 
 echo "===== Backup run started: $(date) =====" >> "$LOG"
 

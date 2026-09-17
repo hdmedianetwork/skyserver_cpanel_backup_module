@@ -15,12 +15,24 @@ const LOG_FILE       = '/var/log/skyserver-backup.log';
 const MANIFEST_DIR   = '/var/spool/skyserver-backup/manifests';
 const STATUS_DIR      = '/var/spool/skyserver-backup/restore-status';
 const INSTALL_DIR    = '/opt/skyserver-backup-module';
+const LOCK_FILE       = '/var/spool/skyserver-backup/backup.lock';
+
+// bin/backup-all.sh holds an flock on LOCK_FILE for its whole run. Trying
+// to (non-blocking) acquire the same lock here tells us if it's busy,
+// without the false positives `pgrep -f` gets from matching its own
+// `sh -c "..."` invocation string.
+function is_backup_running(): bool {
+    $exit = trim((string) shell_exec(
+        'flock -n ' . escapeshellarg(LOCK_FILE) . ' -c true >/dev/null 2>&1; echo $?'
+    ));
+    return $exit !== '0';
+}
 
 function read_conf(): array {
     $conf = [];
     if (is_readable(CONF_FILE)) {
         foreach (file(CONF_FILE) as $line) {
-            if (preg_match('/^([A-Z_]+)="?([^"\n]*)"?$/', trim($line), $m)) {
+            if (preg_match('/^([A-Z0-9_]+)="?([^"\n]*)"?$/', trim($line), $m)) {
                 $conf[$m[1]] = $m[2];
             }
         }
@@ -32,7 +44,7 @@ function write_conf(array $updates): void {
     $lines = is_readable(CONF_FILE) ? file(CONF_FILE, FILE_IGNORE_NEW_LINES) : [];
     $seen = [];
     foreach ($lines as &$line) {
-        if (preg_match('/^([A-Z_]+)=/', trim($line), $m) && array_key_exists($m[1], $updates)) {
+        if (preg_match('/^([A-Z0-9_]+)=/', trim($line), $m) && array_key_exists($m[1], $updates)) {
             if ($updates[$m[1]] !== null) {
                 $line = $m[1] . '="' . addcslashes($updates[$m[1]], '"\\') . '"';
             }
@@ -60,8 +72,8 @@ function latest_run_summary(): array {
     $content = file_get_contents(LOG_FILE);
     $chunks = preg_split('/(?====== Backup run started)/', $content);
     $last = end($chunks) ?: '';
-    preg_match('/Backup run started: (.+)/', $last, $s);
-    preg_match('/Backup run finished: (.+)/', $last, $f);
+    preg_match('/Backup run started: (.+?) =====/', $last, $s);
+    preg_match('/Backup run finished: (.+?) =====/', $last, $f);
     return [
         'ok'       => substr_count($last, '[OK]'),
         'fail'     => substr_count($last, '[FAIL]'),
@@ -113,8 +125,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
     if ($action === 'run_now') {
-        $running = trim((string) shell_exec("pgrep -f 'bin/backup-all.sh' 2>/dev/null"));
-        if ($running !== '') {
+        if (is_backup_running()) {
             $message = 'A backup run is already in progress.';
         } else {
             shell_exec('nohup ' . escapeshellarg(INSTALL_DIR . '/bin/backup-all.sh') . ' > /dev/null 2>&1 &');
@@ -137,7 +148,7 @@ $conf = read_conf();
 $summary = latest_run_summary();
 $rows = account_rows();
 $jobs = restore_jobs();
-$backupRunning = trim((string) shell_exec("pgrep -f 'bin/backup-all.sh' 2>/dev/null")) !== '';
+$backupRunning = is_backup_running();
 ?>
 <!DOCTYPE html>
 <html>

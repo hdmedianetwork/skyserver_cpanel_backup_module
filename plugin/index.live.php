@@ -22,6 +22,7 @@ if (is_readable($manifestFile)) {
 }
 $latest = $backups[0] ?? null;
 $dbCount = $latest ? count($latest['databases'] ?? []) : 0;
+$restoreEnabled = file_exists("/var/spool/skyserver-backup/user-restore-enabled");
 ?>
 <!DOCTYPE html>
 <html>
@@ -64,6 +65,8 @@ $dbCount = $latest ? count($latest['databases'] ?? []) : 0;
   .status-success { background: #e8f8ee; color: var(--green); }
   .status-failed  { background: #fdeaea; color: var(--red); }
   .empty { padding: 30px 18px; color: var(--muted); font-size: 13px; text-align: center; }
+  .notice { background: #fff6e3; border: 1px solid #f0dcb0; color: #8a6116;
+            padding: 11px 15px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
 </style>
 </head>
 <body>
@@ -90,6 +93,10 @@ $dbCount = $latest ? count($latest['databases'] ?? []) : 0;
   </div>
 </div>
 
+<?php if (!$restoreEnabled): ?>
+  <div class="notice">Your backups are running normally. Self-service restore is currently turned off — contact support if you need a backup restored.</div>
+<?php endif; ?>
+
 <?php if (empty($backups)): ?>
   <div class="card"><div class="empty">No backups yet — the first daily backup will appear here after it runs.</div></div>
 <?php else: ?>
@@ -97,15 +104,17 @@ $dbCount = $latest ? count($latest['databases'] ?? []) : 0;
 <div class="card">
   <h2>Account Backups</h2>
   <table>
-    <tr><th>Date</th><th>Size</th><th style="text-align:right">Action</th></tr>
+    <tr><th>Date</th><th>Size</th><?php if ($restoreEnabled): ?><th style="text-align:right">Action</th><?php endif; ?></tr>
     <?php foreach ($backups as $b): ?>
     <tr>
       <td><?= htmlspecialchars($b['date']) ?></td>
       <td><?= htmlspecialchars($b['full_size'] ?? '-') ?></td>
+      <?php if ($restoreEnabled): ?>
       <td style="text-align:right">
         <button class="btn restore-btn" data-type="full" data-date="<?= htmlspecialchars($b['date']) ?>">Restore</button>
         <span class="status-slot"></span>
       </td>
+      <?php endif; ?>
     </tr>
     <?php endforeach; ?>
   </table>
@@ -114,15 +123,17 @@ $dbCount = $latest ? count($latest['databases'] ?? []) : 0;
 <div class="card">
   <h2>Database Backups</h2>
   <table>
-    <tr><th>Date</th><th>Database</th><th style="text-align:right">Action</th></tr>
+    <tr><th>Date</th><th>Database</th><?php if ($restoreEnabled): ?><th style="text-align:right">Action</th><?php endif; ?></tr>
     <?php foreach ($backups as $b): foreach (($b['databases'] ?? []) as $db): ?>
     <tr>
       <td><?= htmlspecialchars($b['date']) ?></td>
       <td><span class="badge badge-db"><?= htmlspecialchars($db) ?></span></td>
+      <?php if ($restoreEnabled): ?>
       <td style="text-align:right">
         <button class="btn restore-btn" data-type="database" data-date="<?= htmlspecialchars($b['date']) ?>" data-db="<?= htmlspecialchars($db) ?>">Restore</button>
         <span class="status-slot"></span>
       </td>
+      <?php endif; ?>
     </tr>
     <?php endforeach; endforeach; ?>
   </table>

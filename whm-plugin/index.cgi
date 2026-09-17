@@ -16,6 +16,7 @@ const MANIFEST_DIR   = '/var/spool/skyserver-backup/manifests';
 const STATUS_DIR      = '/var/spool/skyserver-backup/restore-status';
 const INSTALL_DIR    = '/opt/skyserver-backup-module';
 const LOCK_FILE       = '/var/spool/skyserver-backup/backup.lock';
+const USER_RESTORE_MARKER = '/var/spool/skyserver-backup/user-restore-enabled';
 
 // bin/backup-all.sh holds an flock on LOCK_FILE for its whole run. Trying
 // to (non-blocking) acquire the same lock here tells us if it's busy,
@@ -136,10 +137,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'S3_BUCKET' => $_POST['s3_bucket'] ?? null,
             'AWS_DEFAULT_REGION' => $_POST['aws_region'] ?? null,
             'RETENTION_DAYS' => $_POST['retention_days'] ?? null,
+            'BACKUP_WORK_DIR' => $_POST['work_dir'] ?? null,
+            'DISK_SAFETY_MARGIN_MB' => $_POST['disk_margin'] ?? null,
+            'ENABLE_USER_RESTORE' => (($_POST['user_restore'] ?? '0') === '1') ? '1' : '0',
+            'ALERT_EMAIL' => $_POST['alert_email'] ?? null,
         ];
         if (!empty($_POST['aws_key'])) $updates['AWS_ACCESS_KEY_ID'] = $_POST['aws_key'];
         if (!empty($_POST['aws_secret'])) $updates['AWS_SECRET_ACCESS_KEY'] = $_POST['aws_secret'];
         write_conf($updates);
+
+        // restore-worker.sh syncs this marker every minute, but do it now
+        // so the setting takes effect on the user's next page load.
+        if ($updates['ENABLE_USER_RESTORE'] === '1') {
+            touch(USER_RESTORE_MARKER);
+            chmod(USER_RESTORE_MARKER, 0644);
+        } else {
+            @unlink(USER_RESTORE_MARKER);
+        }
+
         $message = 'Configuration saved.';
     }
 }
@@ -149,6 +164,7 @@ $summary = latest_run_summary();
 $rows = account_rows();
 $jobs = restore_jobs();
 $backupRunning = is_backup_running();
+$userRestore = (($conf['ENABLE_USER_RESTORE'] ?? '0') === '1');
 ?>
 <!DOCTYPE html>
 <html>
@@ -208,6 +224,12 @@ $backupRunning = is_backup_running();
   <div class="stat"><div class="label">Last Run — Success</div><div class="value ok"><?= $summary['ok'] ?></div></div>
   <div class="stat"><div class="label">Last Run — Failed</div><div class="value fail"><?= $summary['fail'] ?></div></div>
   <div class="stat"><div class="label">Retention</div><div class="value"><?= htmlspecialchars($conf['RETENTION_DAYS'] ?? '—') ?> days</div></div>
+  <div class="stat">
+    <div class="label">User Self-Restore</div>
+    <div class="value" style="font-size:16px; padding-top:6px">
+      <span class="tag <?= $userRestore ? 'tag-ok' : 'tag-none' ?>"><?= $userRestore ? 'enabled' : 'disabled' ?></span>
+    </div>
+  </div>
 </div>
 
 <div class="card">
@@ -286,7 +308,25 @@ $backupRunning = is_backup_running();
       <label>Retention (days)</label>
       <input type="number" min="1" name="retention_days" value="<?= htmlspecialchars($conf['RETENTION_DAYS'] ?? '7') ?>">
     </div>
-    <div></div>
+    <div>
+      <label>Alert email on backup failure (blank = no alerts)</label>
+      <input type="text" name="alert_email" value="<?= htmlspecialchars($conf['ALERT_EMAIL'] ?? '') ?>">
+    </div>
+    <div>
+      <label>Backup staging directory</label>
+      <input type="text" name="work_dir" value="<?= htmlspecialchars($conf['BACKUP_WORK_DIR'] ?? '/root') ?>">
+    </div>
+    <div>
+      <label>Disk safety margin (MB)</label>
+      <input type="number" min="0" name="disk_margin" value="<?= htmlspecialchars($conf['DISK_SAFETY_MARGIN_MB'] ?? '2048') ?>">
+    </div>
+    <div class="full">
+      <label>Let cPanel users restore their own backups</label>
+      <select name="user_restore">
+        <option value="0" <?= $userRestore ? '' : 'selected' ?>>Disabled — users can only view backups (recommended until you've tested a restore)</option>
+        <option value="1" <?= $userRestore ? 'selected' : '' ?>>Enabled — users can restore their own account or databases</option>
+      </select>
+    </div>
     <div>
       <label>AWS Access Key ID (leave blank to keep unchanged)</label>
       <input type="password" name="aws_key" placeholder="••••••••••••">

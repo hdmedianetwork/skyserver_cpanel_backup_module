@@ -141,6 +141,43 @@ s3://<bucket>/backups/<cpanel-user>/<YYYY-MM-DD>/full-account.tar.gz
 s3://<bucket>/backups/<cpanel-user>/<YYYY-MM-DD>/databases/<db>.sql.gz
 ```
 
+## Safety features
+
+- **Disk space guard** — an account is skipped (with a clear log line) if
+  backing it up would leave less than `DISK_SAFETY_MARGIN_MB` free in
+  `BACKUP_WORK_DIR`. Filling the disk takes every site on the server down,
+  not just the backup, so this check runs before `pkgacct` does.
+- **Backup verification** — every tarball is tested with `tar -tzf` and
+  every database dump with `gzip -t` *before* upload. A corrupt backup is
+  never uploaded, because a backup that looks fine but won't extract is
+  worse than no backup at all.
+- **Self-service restore is off by default** — `ENABLE_USER_RESTORE=0`
+  hides the restore buttons from users. Enforced in three places: the UI
+  hides the buttons, `action.live.php` rejects crafted POSTs, and
+  `restore-worker.sh` re-checks before touching live data. Turn it on from
+  the WHM dashboard only after you've verified a restore yourself.
+- **Failure alerts** — set `ALERT_EMAIL` and a run with any failed account
+  emails you the failed account list plus the last 40 log lines. Without
+  this, a backup system can fail silently for months.
+- **Log rotation** — `/etc/logrotate.d/skyserver-backup` keeps
+  `/var/log/skyserver-backup.log` from growing without bound.
+
+## Rolling this out safely
+
+If you don't have a staging server, go in this order rather than enabling
+everything at once:
+
+1. Install. Self-service restore stays off — users can see their backups
+   but can't restore.
+2. Run `bin/backup-user.sh <one-small-account>` by hand and read the output.
+3. Download that tarball from S3 and actually open it (`tar -tzf`) —
+   confirm it contains real data.
+4. Run `bin/backup-all.sh` once by hand, then let cron run for a few
+   nights, checking the WHM dashboard each morning.
+5. Create a *throwaway* cPanel account, and restore into that to prove the
+   restore path works end to end.
+6. Only then set self-service restore to Enabled in the WHM dashboard.
+
 ## Security notes
 
 - Use an IAM user/policy scoped to only this bucket
@@ -149,9 +186,9 @@ s3://<bucket>/backups/<cpanel-user>/<YYYY-MM-DD>/databases/<db>.sql.gz
 - `/etc/skyserver-backup.conf` is `chmod 600`, root-only.
 - Restore requests are validated against the live WHM account list and
   cPanel's `<user>_<dbname>` naming convention before anything runs.
-- Test a real restore on a staging account before relying on this in
+- Test a real restore on a throwaway account before relying on this in
   production — a mistaken `restorepkg` overwrites the account's current
-  state.
+  state and cannot be undone.
 
 ## Uninstall
 

@@ -14,6 +14,15 @@ if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
 
 $manifestFile = "/var/spool/skyserver-backup/manifests/{$user}.json";
 $queueDir     = "/var/spool/skyserver-backup/restore-requests";
+$restoreMarker = "/var/spool/skyserver-backup/user-restore-enabled";
+
+// Hiding the buttons isn't enough — this is the boundary a crafted POST
+// would come through. bin/restore-worker.sh checks the same flag again.
+if (!file_exists($restoreMarker)) {
+    http_response_code(403);
+    echo json_encode(['ok' => false, 'error' => 'Self-service restore is disabled. Please contact support.']);
+    exit;
+}
 
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
 $type  = ($input['type'] ?? '') === 'database' ? 'database' : 'full';

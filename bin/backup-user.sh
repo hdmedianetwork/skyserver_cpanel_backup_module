@@ -13,12 +13,31 @@ source "$SCRIPT_DIR/s3-lib.sh"
 USER="${1:?usage: backup-user.sh <cpanel_username>}"
 DATE="$(date +%F)"
 MANIFEST_DIR="/var/spool/skyserver-backup/manifests"
-WORKDIR="$(mktemp -d "/root/skybackup-${USER}-XXXXXX")"
-trap 'rm -rf "$WORKDIR"' EXIT
 
-mkdir -p "$MANIFEST_DIR"
+mkdir -p "$MANIFEST_DIR" "$BACKUP_WORK_DIR"
 
 echo "[*] Backing up account: $USER"
+
+# Refuse to start unless the staging area can hold this account. Filling
+# the disk would take every site on this server down, not just the backup.
+HOME_DIR="$(getent passwd "$USER" | cut -d: -f6)"
+if [ -z "$HOME_DIR" ] || [ ! -d "$HOME_DIR" ]; then
+  HOME_DIR="/home/$USER"
+fi
+ACCT_KB="$(du -sk "$HOME_DIR" 2>/dev/null | awk '{print $1}')"
+[ -n "$ACCT_KB" ] || ACCT_KB=0
+AVAIL_KB="$(df -Pk "$BACKUP_WORK_DIR" | awk 'NR==2 {print $4}')"
+NEEDED_KB=$(( ACCT_KB + DISK_SAFETY_MARGIN_MB * 1024 ))
+
+if [ "$AVAIL_KB" -lt "$NEEDED_KB" ]; then
+  echo "[!] Not enough space in $BACKUP_WORK_DIR for $USER:" \
+       "need $(( NEEDED_KB / 1024 ))MB (account $(( ACCT_KB / 1024 ))MB + margin)," \
+       "have $(( AVAIL_KB / 1024 ))MB free" >&2
+  exit 1
+fi
+
+WORKDIR="$(mktemp -d "$BACKUP_WORK_DIR/skybackup-${USER}-XXXXXX")"
+trap 'rm -rf "$WORKDIR"' EXIT
 
 # 1. Full account backup via cPanel's native pkgacct (home dir, mail, DNS,
 #    config, databases — everything cPanel itself would restore).
@@ -30,6 +49,14 @@ if [ -z "$ACCT_TARBALL" ]; then
   exit 1
 fi
 
+# A tarball that uploads cleanly but won't extract is worse than no backup
+# at all, because it looks like protection. Prove it's readable first.
+if ! tar -tzf "$ACCT_TARBALL" >/dev/null 2>&1; then
+  echo "[!] Backup tarball for $USER failed its integrity check — not uploading" >&2
+  exit 1
+fi
+
+FULL_BYTES="$(stat -c %s "$ACCT_TARBALL")"
 s3_upload "$ACCT_TARBALL" "backups/${USER}/${DATE}/full-account.tar.gz"
 FULL_SIZE="$(du -h "$ACCT_TARBALL" | cut -f1)"
 
@@ -38,17 +65,21 @@ FULL_SIZE="$(du -h "$ACCT_TARBALL" | cut -f1)"
 DB_LIST=()
 while IFS= read -r DB; do
   [ -z "$DB" ] && continue
-  DB_LIST+=("$DB")
   DUMP="$WORKDIR/${DB}.sql.gz"
   mysqldump --single-transaction --quick "$DB" | gzip > "$DUMP"
+  if ! gzip -t "$DUMP" 2>/dev/null; then
+    echo "[!] Dump of database $DB failed its integrity check — not uploading" >&2
+    exit 1
+  fi
+  DB_LIST+=("$DB")
   s3_upload "$DUMP" "backups/${USER}/${DATE}/databases/${DB}.sql.gz"
 done < <(uapi --user="$USER" Mysql list_databases 2>/dev/null | grep -oP '(?<=database: )\S+' || true)
 
 # 3. Update the per-user manifest that the cPanel plugin reads.
 MANIFEST_FILE="$MANIFEST_DIR/${USER}.json"
 DB_JSON="$(printf '%s\n' "${DB_LIST[@]:-}" | jq -R 'select(length > 0)' | jq -s .)"
-ENTRY="$(jq -n --arg date "$DATE" --arg size "$FULL_SIZE" --argjson dbs "$DB_JSON" \
-  '{date: $date, full_size: $size, databases: $dbs}')"
+ENTRY="$(jq -n --arg date "$DATE" --arg size "$FULL_SIZE" --argjson bytes "$FULL_BYTES" --argjson dbs "$DB_JSON" \
+  '{date: $date, full_size: $size, full_size_bytes: $bytes, databases: $dbs}')"
 
 if [ -f "$MANIFEST_FILE" ]; then
   jq --argjson entry "$ENTRY" \
@@ -60,4 +91,4 @@ fi
 chmod 640 "$MANIFEST_FILE"
 chown "root:${USER}" "$MANIFEST_FILE" 2>/dev/null || true
 
-echo "[*] Done: $USER"
+echo "[*] Done: $USER ($FULL_SIZE, ${#DB_LIST[@]} databases)"

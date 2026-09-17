@@ -16,7 +16,14 @@ source "$SKYSERVER_CONF"
 : "${S3_BUCKET:?S3_BUCKET not set in $SKYSERVER_CONF}"
 : "${AWS_DEFAULT_REGION:=us-east-1}"
 : "${RETENTION_DAYS:=7}"
+# Defaults keep configs written before these options existed working.
+: "${BACKUP_WORK_DIR:=/root}"
+: "${DISK_SAFETY_MARGIN_MB:=2048}"
+: "${ENABLE_USER_RESTORE:=0}"
+: "${ALERT_EMAIL:=}"
 export AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+
+USER_RESTORE_MARKER="/var/spool/skyserver-backup/user-restore-enabled"
 
 s3_upload() { # <local_path> <s3_key>
   aws s3 cp "$1" "s3://${S3_BUCKET}/$2" --only-show-errors

@@ -29,6 +29,7 @@ FILES=(
   bin/retention-cleanup.sh
   bin/s3-lib.sh
   etc/cron/skyserver-backup
+  etc/logrotate/skyserver-backup
   etc/skyserver-backup.conf.example
   plugin/action.live.php
   plugin/index.live.php
@@ -79,7 +80,7 @@ command -v jq  >/dev/null 2>&1 || die "jq is required but could not be installed
 command -v aws >/dev/null 2>&1 || die "AWS CLI is required but could not be installed automatically. Install it manually and re-run this script."
 
 log "Writing module files to $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR"/bin "$INSTALL_DIR"/etc/cron "$INSTALL_DIR"/plugin "$INSTALL_DIR"/whm-plugin "$INSTALL_DIR"/scripts
+mkdir -p "$INSTALL_DIR"/bin "$INSTALL_DIR"/etc/cron "$INSTALL_DIR"/etc/logrotate "$INSTALL_DIR"/plugin "$INSTALL_DIR"/whm-plugin "$INSTALL_DIR"/scripts
 HEADER
 
 for f in "${FILES[@]}"; do
@@ -110,6 +111,10 @@ fi
 log "Installing cron jobs..."
 sed "s#__INSTALL_DIR__#$INSTALL_DIR#g" "$INSTALL_DIR/etc/cron/skyserver-backup" > "$CRON_FILE"
 chmod 644 "$CRON_FILE"
+
+log "Installing log rotation..."
+cp "$INSTALL_DIR/etc/logrotate/skyserver-backup" /etc/logrotate.d/skyserver-backup
+chmod 644 /etc/logrotate.d/skyserver-backup
 
 log "Installing cPanel end-user plugin into every theme..."
 for THEME_DIR in "$FRONTEND_BASE"/*/; do
@@ -145,6 +150,9 @@ log "  2) Test a manual backup run:  $INSTALL_DIR/bin/backup-all.sh"
 log "  3) Daily backups then run automatically at 02:00 via /etc/cron.d/skyserver-backup."
 log "  4) Admin: WHM → Plugins → SkyServer Backup Manager."
 log "  5) Each cPanel user will see 'SkyServer Backup Manager' under the Files section."
+log ""
+log "Self-service restore is DISABLED by default. Verify a restore yourself on a"
+log "throwaway account first, then enable it from the WHM dashboard's config form."
 FOOTER
 } > "$OUT_FILE"
 

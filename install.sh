@@ -66,6 +66,10 @@ log "Installing cron jobs..."
 sed "s#__INSTALL_DIR__#$INSTALL_DIR#g" "$INSTALL_DIR/etc/cron/skyserver-backup" > "$CRON_FILE"
 chmod 644 "$CRON_FILE"
 
+log "Installing log rotation..."
+cp "$INSTALL_DIR/etc/logrotate/skyserver-backup" /etc/logrotate.d/skyserver-backup
+chmod 644 /etc/logrotate.d/skyserver-backup
+
 log "Installing cPanel end-user plugin into every theme..."
 for THEME_DIR in "$FRONTEND_BASE"/*/; do
   [ -d "$THEME_DIR" ] || continue
@@ -100,3 +104,6 @@ log "  2) Test a manual backup run:  $INSTALL_DIR/bin/backup-all.sh"
 log "  3) Daily backups then run automatically at 02:00 via /etc/cron.d/skyserver-backup."
 log "  4) Admin: WHM → Plugins → SkyServer Backup Manager."
 log "  5) Each cPanel user will see 'SkyServer Backup Manager' under the Files section."
+log ""
+log "Self-service restore is DISABLED by default. Verify a restore yourself on a"
+log "throwaway account first, then enable it from the WHM dashboard's config form."

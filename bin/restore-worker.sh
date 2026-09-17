@@ -20,6 +20,15 @@ write_status() { # <id> <user> <status> [error]
     > "$STATUS_DIR/${1}.json"
 }
 
+# The plugin runs as the cPanel user and can't read the root-only config,
+# so publish ENABLE_USER_RESTORE as a world-readable marker it can stat.
+if [ "$ENABLE_USER_RESTORE" = "1" ]; then
+  : > "$USER_RESTORE_MARKER"
+  chmod 644 "$USER_RESTORE_MARKER"
+else
+  rm -f "$USER_RESTORE_MARKER"
+fi
+
 shopt -s nullglob
 for REQ in "$QUEUE_DIR"/*.json; do
   ID="$(basename "$REQ" .json)"
@@ -28,6 +37,14 @@ for REQ in "$QUEUE_DIR"/*.json; do
   DATE="$(jq -r .date "$REQ")"
 
   write_status "$ID" "$USER" "running"
+
+  # Re-check here rather than trusting the plugin's own check: this is the
+  # only place that actually touches live data.
+  if [ "$ENABLE_USER_RESTORE" != "1" ]; then
+    write_status "$ID" "$USER" "failed" "self-service restore is disabled by the server administrator"
+    rm -f "$REQ"
+    continue
+  fi
 
   # Ownership check: the request must name a real cPanel account.
   if ! whmapi1 listaccts --output=jsonpretty | grep -qP "\"user\"\s*:\s*\"${USER}\""; then

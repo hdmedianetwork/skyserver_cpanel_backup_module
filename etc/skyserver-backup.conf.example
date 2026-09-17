@@ -14,3 +14,21 @@ AWS_SECRET_ACCESS_KEY="REPLACE_ME"
 
 # Backups older than this many days are deleted from S3 automatically.
 RETENTION_DAYS=7
+
+# Where account tarballs are staged before being uploaded. Point this at a
+# partition with room for your largest account.
+BACKUP_WORK_DIR="/root"
+
+# An account is skipped if backing it up would leave less than this much
+# free space in BACKUP_WORK_DIR. Filling the disk takes down every site on
+# the server, not just the backup, so this margin is deliberately generous.
+DISK_SAFETY_MARGIN_MB=2048
+
+# Set to 1 to let cPanel users restore their own backups from their
+# dashboard. Leave it 0 until you have verified a restore yourself on a
+# throwaway account: a restore overwrites the account's live data and
+# cannot be undone.
+ENABLE_USER_RESTORE=0
+
+# Address to email when a backup run has failures. Empty disables alerts.
+ALERT_EMAIL=""

@@ -1,5 +1,8 @@
-name=SkyServer Backup Manager
+name=skyserver_backup
+service=whostmgr
+displayname=SkyServer Backup Manager
 url=/cgi/skyserver_backup/index.cgi
+entryurl=cgi/skyserver_backup/index.cgi
 user=root
-acl=all
-group=backup
+acls=all
+target=_self

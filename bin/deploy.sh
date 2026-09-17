@@ -59,8 +59,21 @@ PHP_BIN="$(command -v php || true)"
 mkdir -p "$WHM_CGI_DIR"
 sed "1s|.*|#!${PHP_BIN}|" "$INSTALL_DIR/whm-plugin/index.cgi" > "$WHM_CGI_DIR/index.cgi"
 chmod 750 "$WHM_CGI_DIR/index.cgi"
-/usr/local/cpanel/bin/register_appconfig "$INSTALL_DIR/whm-plugin/skyserver_backup.appconfig" >/dev/null 2>&1 \
-  || log "  (register_appconfig failed or is unavailable — add the WHM entry manually, see README)"
+
+# Print whatever register_appconfig says rather than swallowing it — a
+# silent failure here means the WHM menu entry never appears, and the
+# reason is the only way to fix it.
+if [ -x /usr/local/cpanel/bin/register_appconfig ]; then
+  if REG_OUT="$(/usr/local/cpanel/bin/register_appconfig "$INSTALL_DIR/whm-plugin/skyserver_backup.appconfig" 2>&1)"; then
+    log "  WHM plugin registered."
+  else
+    log "  WARNING: register_appconfig failed. Its output was:"
+    printf '    %s\n' "$REG_OUT"
+    log "  The WHM menu entry will be missing until this is resolved."
+  fi
+else
+  log "  WARNING: /usr/local/cpanel/bin/register_appconfig not found on this server."
+fi
 
 log "Rebuilding cPanel UI caches..."
 /usr/local/cpanel/scripts/rebuild_sprites >/dev/null 2>&1 || true

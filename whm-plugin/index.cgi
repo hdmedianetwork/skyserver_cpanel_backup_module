@@ -17,6 +17,8 @@ const STATUS_DIR      = '/var/spool/skyserver-backup/restore-status';
 const INSTALL_DIR    = '/opt/skyserver-backup-module';
 const LOCK_FILE       = '/var/spool/skyserver-backup/backup.lock';
 const USER_RESTORE_MARKER = '/var/spool/skyserver-backup/user-restore-enabled';
+const QUEUE_DIR       = '/var/spool/skyserver-backup/restore-requests';
+const LOGO_URL        = 'https://ik.imagekit.io/hdmn/skybackupmanager.png';
 
 // bin/backup-all.sh holds an flock on LOCK_FILE for its whole run. Trying
 // to (non-blocking) acquire the same lock here tells us if it's busy,
@@ -109,6 +111,17 @@ function account_rows(): array {
     return $rows;
 }
 
+function account_backups(string $user): array {
+    $f = MANIFEST_DIR . "/$user.json";
+    return is_readable($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
+}
+
+function backup_log_tail(int $lines = 120): string {
+    if (!is_readable(LOG_FILE)) return '(no log yet)';
+    $out = shell_exec('tail -n ' . (int) $lines . ' ' . escapeshellarg(LOG_FILE) . ' 2>/dev/null');
+    return $out !== null && $out !== '' ? $out : '(log is empty)';
+}
+
 function restore_jobs(int $limit = 20): array {
     $files = glob(STATUS_DIR . '/*.json') ?: [];
     usort($files, fn($a, $b) => filemtime($b) <=> filemtime($a));
@@ -122,6 +135,10 @@ function restore_jobs(int $limit = 20): array {
 }
 
 $message = '';
+$updateAvailable = false;
+$updateLog = '';
+$conf = read_conf();
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
@@ -156,15 +173,98 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $message = 'Configuration saved.';
+
+    } elseif ($action === 'backup_user') {
+        $target = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['user'] ?? '');
+        if ($target === '' || !in_array($target, whm_accounts(), true)) {
+            $message = 'Unknown account.';
+        } elseif (is_backup_running()) {
+            $message = 'A backup run is already in progress — try again once it finishes.';
+        } else {
+            shell_exec('nohup ' . escapeshellarg(INSTALL_DIR . '/bin/backup-user.sh') . ' '
+                . escapeshellarg($target) . ' >> ' . escapeshellarg(LOG_FILE) . ' 2>&1 &');
+            $message = "Backup of $target started in the background — check the log below in a minute.";
+        }
+
+    } elseif ($action === 'admin_restore') {
+        $target = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['user'] ?? '');
+        $date   = preg_replace('/[^0-9\-]/', '', $_POST['date'] ?? '');
+        $db     = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['db'] ?? '');
+        $type   = ($db !== '') ? 'database' : 'full';
+
+        $valid = false;
+        foreach (account_backups($target) as $b) {
+            if (($b['date'] ?? '') === $date) {
+                $valid = ($type === 'full') || in_array($db, $b['databases'] ?? [], true);
+            }
+        }
+
+        if (!$valid) {
+            $message = 'That backup does not exist for that account.';
+        } else {
+            // Queued with source=admin so restore-worker.sh runs it even
+            // while user self-restore is switched off.
+            $id = uniqid('req_', true);
+            $req = ['id' => $id, 'user' => $target, 'type' => $type, 'date' => $date, 'source' => 'admin'];
+            if ($type === 'database') $req['db'] = $db;
+            file_put_contents(QUEUE_DIR . "/$id.json", json_encode($req));
+            $what = $type === 'full' ? "full account" : "database $db";
+            $message = "Restore of $what for $target queued — it starts within a minute. Watch Recent Restore Jobs.";
+        }
+
+    } elseif ($action === 'test_s3') {
+        $bucket = $conf['S3_BUCKET'] ?? '';
+        if ($bucket === '' || $bucket === 'your-bucket-name') {
+            $message = 'S3 test failed: no bucket configured yet.';
+        } else {
+            $cmd = 'AWS_ACCESS_KEY_ID=' . escapeshellarg($conf['AWS_ACCESS_KEY_ID'] ?? '')
+                 . ' AWS_SECRET_ACCESS_KEY=' . escapeshellarg($conf['AWS_SECRET_ACCESS_KEY'] ?? '')
+                 . ' AWS_DEFAULT_REGION=' . escapeshellarg($conf['AWS_DEFAULT_REGION'] ?? 'us-east-1')
+                 . ' aws s3 ls ' . escapeshellarg("s3://$bucket/") . ' --max-items 1 2>&1';
+            $out = trim((string) shell_exec($cmd . '; echo "EXIT:$?"'));
+            if (str_ends_with($out, 'EXIT:0')) {
+                $message = "S3 test passed — bucket \"$bucket\" is reachable and the credentials work.";
+            } else {
+                $message = 'S3 test FAILED: ' . preg_replace('/\s*EXIT:\d+$/', '', $out);
+            }
+        }
+
+    } elseif ($action === 'update_check') {
+        $out = trim((string) shell_exec(
+            escapeshellarg(INSTALL_DIR . '/bin/self-update.sh') . ' check 2>&1'));
+        if (str_ends_with($out, 'update')) {
+            preg_match('/local (\S+) remote (\S+)/', $out, $m);
+            $updateAvailable = true;
+            $message = "This server is on version {$m[1]}; GitHub has {$m[2]}. Hit \"Install Update\" to sync.";
+        } elseif (str_ends_with($out, 'current')) {
+            preg_match('/local (\S+)/', $out, $m);
+            $message = "You are up to date (version {$m[1]}).";
+        } else {
+            $message = 'Update check failed: could not reach GitHub.';
+        }
+
+    } elseif ($action === 'update_apply') {
+        $out = shell_exec(escapeshellarg(INSTALL_DIR . '/bin/self-update.sh') . ' apply 2>&1');
+        $updateLog = trim((string) $out);
+        $message = str_contains($updateLog, 'Updated to version')
+            ? 'Module updated successfully.'
+            : 'Update failed — see the output below.';
     }
 }
 
-$conf = read_conf();
+$conf = read_conf();   // re-read: a save above may have changed it
 $summary = latest_run_summary();
 $rows = account_rows();
 $jobs = restore_jobs();
 $backupRunning = is_backup_running();
 $userRestore = (($conf['ENABLE_USER_RESTORE'] ?? '0') === '1');
+$version = trim((string) @file_get_contents(INSTALL_DIR . '/VERSION')) ?: 'unknown';
+
+// Feeds the admin restore form's date/database dropdowns without a round trip.
+$backupsByUser = [];
+foreach ($rows as $r) {
+    $backupsByUser[$r['user']] = account_backups($r['user']);
+}
 ?>
 <!DOCTYPE html>
 <html>
@@ -210,14 +310,49 @@ $userRestore = (($conf['ENABLE_USER_RESTORE'] ?? '0') === '1');
   form.config label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
   form.config input { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
   form.config .full { grid-column: 1 / -1; }
+  form.config select { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+  .brand img { height: 46px; width: auto; max-width: 210px; display: block; }
+  .brand h1 { margin: 0 0 2px; }
+  .brand-actions { margin: 0 0 0 auto; }
+  .logbox { margin: 0; padding: 14px 18px; background: #1e2530; color: #d6dde8;
+            font-size: 12px; line-height: 1.5; max-height: 340px; overflow: auto;
+            white-space: pre-wrap; word-break: break-word; }
+  form.inline { display: inline; margin: 0; }
+  .restore-form { padding: 16px 18px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .restore-form label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .restore-form select { padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+                         font-size: 13px; min-width: 165px; }
 </style>
 </head>
 <body>
 
-<h1>SkyServer Backup Manager</h1>
-<div class="sub">S3 backup status across all cPanel accounts on this server.</div>
+<div class="brand">
+  <img src="<?= LOGO_URL ?>" alt="SkyServer Backup Manager">
+  <div>
+    <h1>SkyServer Backup Manager</h1>
+    <div class="sub" style="margin:0">S3 backup status across all cPanel accounts on this server. &middot; v<?= htmlspecialchars($version) ?></div>
+  </div>
+  <form method="post" class="brand-actions">
+    <button class="btn" name="action" value="update_check">Check for Updates</button>
+  </form>
+</div>
 
 <?php if ($message): ?><div class="msg"><?= htmlspecialchars($message) ?></div><?php endif; ?>
+
+<?php if ($updateAvailable): ?>
+<form method="post" class="msg" style="background:#e8f8ee; border-color:#bfe6cd; color:#1f7a45">
+  A newer version is available on GitHub.
+  <button class="btn btn-primary" name="action" value="update_apply" style="margin-left:10px"
+          onclick="return confirm('Pull the latest code from GitHub and redeploy? Your config and existing backups are not touched.');">
+    Install Update
+  </button>
+</form>
+<?php endif; ?>
+
+<?php if ($updateLog !== ''): ?>
+  <div class="card"><h2>Update Output</h2><pre class="logbox"><?= htmlspecialchars($updateLog) ?></pre></div>
+<?php endif; ?>
 
 <div class="stats">
   <div class="stat"><div class="label">Accounts Protected</div><div class="value"><?= count($rows) ?></div></div>
@@ -257,7 +392,7 @@ $userRestore = (($conf['ENABLE_USER_RESTORE'] ?? '0') === '1');
     <div class="empty">No cPanel accounts found via whmapi1.</div>
   <?php else: ?>
   <table>
-    <tr><th>User</th><th>Last Backup</th><th>Size</th><th>Databases</th><th>Total Backups</th><th>Status</th></tr>
+    <tr><th>User</th><th>Last Backup</th><th>Size</th><th>Databases</th><th>Total Backups</th><th>Status</th><th style="text-align:right">Action</th></tr>
     <?php foreach ($rows as $r): ?>
     <tr>
       <td><?= htmlspecialchars($r['user']) ?></td>
@@ -267,10 +402,45 @@ $userRestore = (($conf['ENABLE_USER_RESTORE'] ?? '0') === '1');
       <td><?= $r['total_backups'] ?></td>
       <td><?php if ($r['last_date']): ?><span class="tag tag-ok">backed up</span>
           <?php else: ?><span class="tag tag-none">no backup yet</span><?php endif; ?></td>
+      <td style="text-align:right">
+        <form method="post" class="inline">
+          <input type="hidden" name="user" value="<?= htmlspecialchars($r['user']) ?>">
+          <button class="btn" name="action" value="backup_user" <?= $backupRunning ? 'disabled' : '' ?>>Back Up Now</button>
+        </form>
+      </td>
     </tr>
     <?php endforeach; ?>
   </table>
   <?php endif; ?>
+</div>
+
+<div class="card">
+  <h2>Restore an Account</h2>
+  <form method="post" class="restore-form"
+        onsubmit="return confirm('This overwrites the live data for the selected account and cannot be undone. Continue?');">
+    <input type="hidden" name="action" value="admin_restore">
+    <div>
+      <label>Account</label>
+      <select name="user" id="ra-user" required>
+        <option value="">— select —</option>
+        <?php foreach ($rows as $r): if (!$r['last_date']) continue; ?>
+          <option value="<?= htmlspecialchars($r['user']) ?>"><?= htmlspecialchars($r['user']) ?></option>
+        <?php endforeach; ?>
+      </select>
+    </div>
+    <div>
+      <label>Backup date</label>
+      <select name="date" id="ra-date" required><option value="">— select account first —</option></select>
+    </div>
+    <div>
+      <label>What to restore</label>
+      <select name="db" id="ra-db"><option value="">Full account</option></select>
+    </div>
+    <div><button class="btn btn-primary" type="submit">Restore</button></div>
+  </form>
+  <div style="padding: 0 18px 16px; font-size: 12px; color: var(--muted)">
+    Runs as admin, so it works even while user self-restore is switched off — use this to test a restore on a throwaway account before enabling it for customers.
+  </div>
 </div>
 
 <div class="card">
@@ -339,7 +509,49 @@ $userRestore = (($conf['ENABLE_USER_RESTORE'] ?? '0') === '1');
       <button class="btn btn-primary" type="submit">Save Configuration</button>
     </div>
   </form>
+  <form method="post" style="padding: 0 18px 16px">
+    <button class="btn" name="action" value="test_s3">Test S3 Connection</button>
+    <span style="font-size:12px; color: var(--muted); margin-left:8px">
+      Checks the saved bucket and credentials before the first backup run depends on them.
+    </span>
+  </form>
 </div>
+
+<div class="card">
+  <h2>
+    Backup Log
+    <form method="post" class="inline"><button class="btn" name="action" value="refresh_log">Refresh</button></form>
+  </h2>
+  <pre class="logbox"><?= htmlspecialchars(backup_log_tail(120)) ?></pre>
+</div>
+
+<script>
+// Backups per account, so the restore form's dropdowns can be filled in
+// without another request.
+var BACKUPS = <?= json_encode($backupsByUser) ?>;
+
+var userSel = document.getElementById('ra-user');
+var dateSel = document.getElementById('ra-date');
+var dbSel   = document.getElementById('ra-db');
+
+userSel.addEventListener('change', function () {
+  var list = BACKUPS[userSel.value] || [];
+  dateSel.innerHTML = list.length
+    ? list.map(function (b) { return '<option value="' + b.date + '">' + b.date + ' (' + (b.full_size || '?') + ')</option>'; }).join('')
+    : '<option value="">no backups</option>';
+  fillDatabases();
+});
+
+dateSel.addEventListener('change', fillDatabases);
+
+function fillDatabases() {
+  var list = BACKUPS[userSel.value] || [];
+  var entry = list.filter(function (b) { return b.date === dateSel.value; })[0];
+  var dbs = (entry && entry.databases) || [];
+  dbSel.innerHTML = '<option value="">Full account</option>' +
+    dbs.map(function (d) { return '<option value="' + d + '">Only database: ' + d + '</option>'; }).join('');
+}
+</script>
 
 </body>
 </html>

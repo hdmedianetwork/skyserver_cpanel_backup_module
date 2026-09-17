@@ -33,4 +33,9 @@ if (($data['user'] ?? null) !== $user) {
     exit;
 }
 
-echo json_encode(['ok' => true, 'status' => $data['status'] ?? 'unknown', 'error' => $data['error'] ?? null]);
+echo json_encode([
+    'ok' => true,
+    'status' => $data['status'] ?? 'unknown',
+    'error' => $data['error'] ?? null,
+    'download_url' => $data['download_url'] ?? null,
+]);

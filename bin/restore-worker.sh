@@ -20,6 +20,12 @@ write_status() { # <id> <user> <status> [error]
     > "$STATUS_DIR/${1}.json"
 }
 
+write_download_status() { # <id> <user> <url>
+  jq -n --arg id "$1" --arg user "$2" --arg url "$3" --arg ts "$(date -Iseconds)" \
+    '{id: $id, user: $user, status: "success", download_url: $url, updated_at: $ts}' \
+    > "$STATUS_DIR/${1}.json"
+}
+
 # The plugin runs as the cPanel user and can't read the root-only config,
 # so publish ENABLE_USER_RESTORE as a world-readable marker it can stat.
 if [ "$ENABLE_USER_RESTORE" = "1" ]; then
@@ -35,12 +41,15 @@ for REQ in "$QUEUE_DIR"/*.json; do
   USER="$(jq -r .user "$REQ")"
   TYPE="$(jq -r .type "$REQ")"
   DATE="$(jq -r .date "$REQ")"
+  SOURCE="$(jq -r '.source // "user"' "$REQ")"
 
   write_status "$ID" "$USER" "running"
 
   # Re-check here rather than trusting the plugin's own check: this is the
-  # only place that actually touches live data.
-  if [ "$ENABLE_USER_RESTORE" != "1" ]; then
+  # only place that actually touches live data. Downloads only read a
+  # backup, and admin-queued requests come from the root-only WHM panel,
+  # so neither is subject to the user-facing gate.
+  if [ "$TYPE" != "download" ] && [ "$SOURCE" != "admin" ] && [ "$ENABLE_USER_RESTORE" != "1" ]; then
     write_status "$ID" "$USER" "failed" "self-service restore is disabled by the server administrator"
     rm -f "$REQ"
     continue
@@ -49,6 +58,18 @@ for REQ in "$QUEUE_DIR"/*.json; do
   # Ownership check: the request must name a real cPanel account.
   if ! whmapi1 listaccts --output=jsonpretty | grep -qP "\"user\"\s*:\s*\"${USER}\""; then
     write_status "$ID" "$USER" "failed" "unknown user"
+    rm -f "$REQ"
+    continue
+  fi
+
+  # A download hands back a time-limited S3 link rather than touching the
+  # account, so the user never needs S3 credentials of their own.
+  if [ "$TYPE" = "download" ]; then
+    if URL="$(aws s3 presign "s3://${S3_BUCKET}/backups/${USER}/${DATE}/full-account.tar.gz" --expires-in 3600 2>/dev/null)"; then
+      write_download_status "$ID" "$USER" "$URL"
+    else
+      write_status "$ID" "$USER" "failed" "could not generate a download link"
+    fi
     rm -f "$REQ"
     continue
   fi

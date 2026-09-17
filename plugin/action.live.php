@@ -16,18 +16,20 @@ $manifestFile = "/var/spool/skyserver-backup/manifests/{$user}.json";
 $queueDir     = "/var/spool/skyserver-backup/restore-requests";
 $restoreMarker = "/var/spool/skyserver-backup/user-restore-enabled";
 
+$input = json_decode(file_get_contents('php://input'), true) ?: [];
+$requested = $input['type'] ?? '';
+$type = in_array($requested, ['database', 'download'], true) ? $requested : 'full';
+$date = preg_replace('/[^0-9\-]/', '', $input['date'] ?? '');
+$db   = preg_replace('/[^a-zA-Z0-9_]/', '', $input['db'] ?? '');
+
 // Hiding the buttons isn't enough — this is the boundary a crafted POST
 // would come through. bin/restore-worker.sh checks the same flag again.
-if (!file_exists($restoreMarker)) {
+// A download only reads the backup, so it isn't gated by that flag.
+if ($type !== 'download' && !file_exists($restoreMarker)) {
     http_response_code(403);
     echo json_encode(['ok' => false, 'error' => 'Self-service restore is disabled. Please contact support.']);
     exit;
 }
-
-$input = json_decode(file_get_contents('php://input'), true) ?: [];
-$type  = ($input['type'] ?? '') === 'database' ? 'database' : 'full';
-$date  = preg_replace('/[^0-9\-]/', '', $input['date'] ?? '');
-$db    = preg_replace('/[^a-zA-Z0-9_]/', '', $input['db'] ?? '');
 
 $backups = [];
 if (is_readable($manifestFile)) {

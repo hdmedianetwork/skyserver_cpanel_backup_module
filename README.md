@@ -84,27 +84,55 @@ nano /etc/skyserver-backup.conf
 
 ## Admin dashboard (WHM)
 
-**WHM → Plugins → SkyServer Backup Manager** (`whm-plugin/index.cgi`):
+**WHM → Plugins → SkyServer Backup Manager** (`whm-plugin/index.cgi`).
+Everything below is doable from the GUI — no SSH needed for day-to-day work:
 
 - Accounts table — every cPanel account, last backup date/size, database
-  count, total backup count.
+  count, total backups, plus a **Back Up Now** button per account.
 - Last run summary — success/fail counts, start/finish time, which
-  accounts failed.
-- **Run Backup Now** — triggers `backup-all.sh` in the background on
-  demand (disabled while a run is already in progress).
+  accounts failed — and **Run Backup Now** for all accounts.
+- **Restore an Account** — pick account → backup date → full account or a
+  single database. Runs with `source=admin`, so it works even while user
+  self-restore is off. This is how you test a restore on a throwaway
+  account before exposing the feature to customers.
 - Recent restore jobs — who requested what, status, and any error.
-- S3 & retention config form — edit bucket, region, retention days, and
-  (optionally) rotate the AWS keys without touching the shell.
+- **Test S3 Connection** — verifies the saved bucket and credentials
+  before the first nightly run depends on them.
+- **Check for Updates / Install Update** — compares this server's VERSION
+  against GitHub and, on one click, pulls the latest code and re-runs
+  `bin/deploy.sh`. No re-running the installer.
+- Backup log viewer — the last 120 lines of
+  `/var/log/skyserver-backup.log`, so failures can be diagnosed without
+  SSH.
+- S3 & retention config form — bucket, region, retention, alert email,
+  staging directory, disk safety margin, user-restore toggle, and AWS key
+  rotation.
 
 ## User dashboard (cPanel)
 
 Inside cPanel → Files → **SkyServer Backup Manager** (`plugin/index.live.php`):
 
 - Stat cards: total backups, last backup date/size, database count.
-- One-click **Restore** per account backup or per database, with a
-  confirmation prompt.
+- **Download** per account backup — the worker hands back a one-hour
+  presigned S3 link, so the user never gets S3 credentials. Downloads are
+  read-only and stay available even while restore is switched off.
+- One-click **Restore** per account backup or per database (when enabled),
+  with a confirmation prompt.
 - Live status badge (queued → running → success/failed) that polls
   `status.live.php` every few seconds — no page reload needed.
+
+## Updating
+
+Push a change to `main`, bump `VERSION`, and on each server press
+**Check for Updates → Install Update** in WHM. That runs
+`bin/self-update.sh apply`, which pulls the latest code and re-runs
+`bin/deploy.sh` (the same deploy step the installer uses, so there is only
+one copy of that logic). Config, spool state and S3 backups are untouched.
+
+If you distribute via the standalone bundle instead, rebuild it with
+`scripts/build-installer.sh` and re-upload — but note that servers
+installed from the bundle can still self-update from GitHub, since
+`self-update.sh` clones fresh when there's no git checkout.
 
 ## How it works
 

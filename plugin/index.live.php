@@ -67,11 +67,17 @@ $restoreEnabled = file_exists("/var/spool/skyserver-backup/user-restore-enabled"
   .empty { padding: 30px 18px; color: var(--muted); font-size: 13px; text-align: center; }
   .notice { background: #fff6e3; border: 1px solid #f0dcb0; color: #8a6116;
             padding: 11px 15px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
+  .brand { display: flex; align-items: center; gap: 13px; margin-bottom: 4px; }
+  .brand img { height: 38px; width: auto; max-width: 190px; display: block; }
+  .dl-link { font-size: 12px; font-weight: 600; color: var(--blue); text-decoration: none; }
 </style>
 </head>
 <body>
 
-<h1>Backup Manager</h1>
+<div class="brand">
+  <img src="https://ik.imagekit.io/hdmn/skybackupmanager.png" alt="SkyServer Backup Manager">
+  <h1>Backup Manager</h1>
+</div>
 <div class="sub">Automatic daily backups for <strong><?= htmlspecialchars($user) ?></strong>, stored securely off-server.</div>
 
 <div class="stats">
@@ -104,17 +110,18 @@ $restoreEnabled = file_exists("/var/spool/skyserver-backup/user-restore-enabled"
 <div class="card">
   <h2>Account Backups</h2>
   <table>
-    <tr><th>Date</th><th>Size</th><?php if ($restoreEnabled): ?><th style="text-align:right">Action</th><?php endif; ?></tr>
+    <tr><th>Date</th><th>Size</th><th style="text-align:right">Action</th></tr>
     <?php foreach ($backups as $b): ?>
     <tr>
       <td><?= htmlspecialchars($b['date']) ?></td>
       <td><?= htmlspecialchars($b['full_size'] ?? '-') ?></td>
-      <?php if ($restoreEnabled): ?>
       <td style="text-align:right">
+        <button class="btn restore-btn" data-type="download" data-date="<?= htmlspecialchars($b['date']) ?>">Download</button>
+        <?php if ($restoreEnabled): ?>
         <button class="btn restore-btn" data-type="full" data-date="<?= htmlspecialchars($b['date']) ?>">Restore</button>
+        <?php endif; ?>
         <span class="status-slot"></span>
       </td>
-      <?php endif; ?>
     </tr>
     <?php endforeach; ?>
   </table>
@@ -145,12 +152,18 @@ $restoreEnabled = file_exists("/var/spool/skyserver-backup/user-restore-enabled"
 document.querySelectorAll('.restore-btn').forEach(function (btn) {
   btn.addEventListener('click', function () {
     var type = btn.dataset.type, date = btn.dataset.date, db = btn.dataset.db || '';
-    var label = type === 'full' ? 'your entire account' : ('database "' + db + '"');
-    if (!confirm('This will overwrite ' + label + ' with the backup from ' + date + '. Continue?')) return;
 
-    var slot = btn.nextElementSibling;
+    // A download only reads the backup, so it doesn't need the "this will
+    // overwrite your data" warning a restore does.
+    if (type !== 'download') {
+      var label = type === 'full' ? 'your entire account' : ('database "' + db + '"');
+      if (!confirm('This will overwrite ' + label + ' with the backup from ' + date + '. Continue?')) return;
+    }
+
+    var slot = btn.parentElement.querySelector('.status-slot');
     btn.disabled = true;
-    slot.innerHTML = '<span class="status-tag status-queued">queued</span>';
+    slot.innerHTML = '<span class="status-tag status-queued">' +
+      (type === 'download' ? 'preparing link…' : 'queued') + '</span>';
 
     fetch('action.live.php', {
       method: 'POST',
@@ -174,6 +187,14 @@ function poll(id, slot, btn) {
   fetch('status.live.php?id=' + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (res) {
     if (!res.ok) {
       slot.innerHTML = '<span class="status-tag status-failed">error</span>';
+      btn.disabled = false;
+      return;
+    }
+    if (res.status === 'success' && res.download_url) {
+      // The link is a short-lived S3 URL, so start the download straight
+      // away and leave it clickable in case the browser blocks that.
+      slot.innerHTML = ' <a class="dl-link" href="' + res.download_url + '">Download ready — click if it doesn\'t start</a>';
+      window.location.href = res.download_url;
       btn.disabled = false;
       return;
     }

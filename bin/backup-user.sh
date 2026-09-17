@@ -75,19 +75,28 @@ FULL_SIZE="$(du -h "$ACCT_TARBALL" | cut -f1)"
 # unprotected, so take both and let the caller dedupe.
 list_databases() { # <cpanel_user>
   local user="${1//[^a-zA-Z0-9]/}"
-  local uapi_bin out
+  local uapi_bin out err status
 
   uapi_bin="$(command -v uapi || true)"
   [ -n "$uapi_bin" ] || uapi_bin="/usr/local/cpanel/bin/uapi"
 
   if [ -x "$uapi_bin" ]; then
-    # Parsed as JSON: the human-readable output this used to be grepped for
-    # is not a format cPanel promises to keep.
-    if out="$("$uapi_bin" --user="$user" --output=jsonpretty Mysql list_databases 2>&1)"; then
-      printf '%s\n' "$out" | jq -r '.result.data[]?.database // empty' 2>/dev/null
+    err="$(mktemp)"
+    # stderr is kept out of $out: cPanel logs warnings there, and folding one
+    # into the JSON would leave jq nothing it can parse.
+    if out="$("$uapi_bin" --user="$user" --output=jsonpretty Mysql list_databases 2>"$err")"; then
+      status="$(printf '%s' "$out" | jq -r '.result.status // 0' 2>/dev/null)"
+      if [ "$status" = "1" ]; then
+        printf '%s' "$out" | jq -r '.result.data[]?.database // empty' 2>/dev/null
+      else
+        # A suspended account answers exactly like this: status 0, no data.
+        echo "[!] uapi listed no databases for $user (using MySQL's list instead):" \
+             "$(printf '%s' "$out" | jq -r '(.result.errors // ["unknown error"]) | join("; ")' 2>/dev/null | tr '\n' ' ')" >&2
+      fi
     else
-      echo "[!] uapi could not list databases for $user: $out" >&2
+      echo "[!] uapi failed for $user (using MySQL's list instead): $(tr '\n' ' ' < "$err")" >&2
     fi
+    rm -f "$err"
   else
     echo "[!] uapi not found — using MySQL's own database list for $user" >&2
   fi

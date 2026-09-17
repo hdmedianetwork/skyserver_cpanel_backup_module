@@ -47,9 +47,20 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
   PLUGIN_DEST="${THEME_DIR}skyserver_backup"
   mkdir -p "$PLUGIN_DEST"
   cp "$INSTALL_DIR"/plugin/*.live.php "$PLUGIN_DEST/"
+  chmod 644 "$PLUGIN_DEST"/*.live.php
+
+  # The icon entry belongs in the theme's own dynamicui directory — that is
+  # where cPanel reads menu items from. Without it the pages are served but
+  # nothing links to them, which is exactly how this looked: installed, and
+  # invisible.
+  mkdir -p "${THEME_DIR}dynamicui"
+  cp "$INSTALL_DIR/plugin/skyserver_backup.conf" \
+     "${THEME_DIR}dynamicui/dynamicui_skyserver_backup.conf"
+  chmod 644 "${THEME_DIR}dynamicui/dynamicui_skyserver_backup.conf"
 done
 mkdir -p "$DYNAMICUI_DIR"
 cp "$INSTALL_DIR/plugin/skyserver_backup.conf" "$DYNAMICUI_DIR/dynamicui_skyserver_backup.conf"
+chmod 644 "$DYNAMICUI_DIR/dynamicui_skyserver_backup.conf"
 
 log "Installing WHM admin dashboard..."
 PHP_BIN="$(command -v php || true)"

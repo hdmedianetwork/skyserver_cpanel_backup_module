@@ -68,9 +68,21 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
   # directory, named after the descriptor's file=> key — the same place
   # letsencrypt-cpanel.png and lvephpsel.svg sit. Not the plugin's own
   # directory, which is where this landed before and was ignored.
-  mkdir -p "${THEME_DIR}assets/application_icons"
-  cp "$ICON_SRC" "${THEME_DIR}assets/application_icons/skyserver_backup.png"
-  chmod 644 "${THEME_DIR}assets/application_icons/skyserver_backup.png"
+  ICON_DIR="${THEME_DIR}assets/application_icons"
+  mkdir -p "$ICON_DIR"
+  cp "$ICON_SRC" "$ICON_DIR/skyserver_backup.png"
+
+  # Almost every icon in that directory is .svg, so ship the same logo under
+  # both extensions and let the theme pick. The PNG is embedded rather than
+  # linked: an SVG used as an <img> cannot fetch anything of its own, so a
+  # reference to the logo's URL would render as nothing.
+  printf '%s' \
+    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 96 96" width="96" height="96"><image width="96" height="96" xlink:href="data:image/png;base64,' \
+    > "$ICON_DIR/skyserver_backup.svg"
+  base64 -w0 "$ICON_SRC" >> "$ICON_DIR/skyserver_backup.svg"
+  printf '%s' '"/></svg>' >> "$ICON_DIR/skyserver_backup.svg"
+
+  chmod 644 "$ICON_DIR/skyserver_backup.png" "$ICON_DIR/skyserver_backup.svg"
   rm -f "$PLUGIN_DEST/skyserver_backup.png"
 
   # The icon entry belongs in the theme's own dynamicui directory — that is

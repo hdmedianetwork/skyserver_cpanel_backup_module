@@ -10,6 +10,18 @@
  * path on this server.
  */
 
+// cpsrvd serves this file as a CGI and reads the response headers straight
+// off its stdout — but the shebang points at the PHP *CLI* binary, which
+// emits none of its own. With no header block cpsrvd swallows the opening
+// <!DOCTYPE html><html><head> of the document as a malformed one, sets no
+// content type, and the panel arrives as raw markup in the browser. Emit the
+// block ourselves, before any other output.
+if (PHP_SAPI === 'cli') {
+    echo "Content-type: text/html; charset=utf-8\r\n\r\n";
+} elseif (!headers_sent()) {
+    header('Content-Type: text/html; charset=utf-8');
+}
+
 const CONF_FILE     = '/etc/skyserver-backup.conf';
 const LOG_FILE       = '/var/log/skyserver-backup.log';
 const MANIFEST_DIR   = '/var/spool/skyserver-backup/manifests';
@@ -150,7 +162,7 @@ $updateLog = '';
 $s3TestOutput = '';
 $conf = read_conf();
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     $action = $_POST['action'] ?? '';
 
     if ($action === 'run_now') {

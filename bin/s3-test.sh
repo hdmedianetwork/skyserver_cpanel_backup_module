@@ -12,6 +12,7 @@ source "$SCRIPT_DIR/s3-lib.sh"
 echo "Endpoint : ${S3_ENDPOINT_URL:-(default AWS S3)}"
 echo "Bucket   : $S3_BUCKET"
 echo "Region   : $AWS_DEFAULT_REGION"
+echo "URL style: ${S3_ADDRESSING_STYLE:-auto}"
 echo "AWS CLI  : $(aws --version 2>&1)"
 echo
 

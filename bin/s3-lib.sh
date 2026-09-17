@@ -24,7 +24,35 @@ source "$SKYSERVER_CONF"
 # Empty means real AWS S3. Set it for any S3-compatible provider
 # (Wasabi, Backblaze B2, IDrive e2, DigitalOcean Spaces, MinIO, Contabo…).
 : "${S3_ENDPOINT_URL:=}"
+: "${S3_ADDRESSING_STYLE:=}"
 export AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+
+# The AWS CLI rejects an endpoint without a scheme outright, and typing
+# the bare hostname is the obvious mistake to make.
+if [ -n "$S3_ENDPOINT_URL" ]; then
+  case "$S3_ENDPOINT_URL" in
+    http://*|https://*) ;;
+    *) S3_ENDPOINT_URL="https://${S3_ENDPOINT_URL}" ;;
+  esac
+fi
+
+# With virtual-host addressing the bucket becomes a subdomain of the
+# endpoint, so a bucket whose name contains a dot breaks TLS: a wildcard
+# cert matches one label only, and "my.bucket.host" is two. Path-style
+# avoids that and every S3-compatible provider accepts it, so it is the
+# default whenever a custom endpoint is in play.
+if [ -n "$S3_ENDPOINT_URL" ]; then
+  : "${S3_ADDRESSING_STYLE:=path}"
+  AWS_CFG_DIR="/var/spool/skyserver-backup/aws"
+  mkdir -p "$AWS_CFG_DIR"
+  chmod 700 "$AWS_CFG_DIR"
+  cat > "$AWS_CFG_DIR/config" <<AWSCFG
+[default]
+s3 =
+    addressing_style = ${S3_ADDRESSING_STYLE}
+AWSCFG
+  export AWS_CONFIG_FILE="$AWS_CFG_DIR/config"
+fi
 
 USER_RESTORE_MARKER="/var/spool/skyserver-backup/user-restore-enabled"
 

@@ -111,6 +111,16 @@ function account_rows(): array {
     return $rows;
 }
 
+function normalize_endpoint(string $url): string {
+    $url = trim($url);
+    // The AWS CLI refuses an endpoint with no scheme, and typing the bare
+    // hostname is the easy mistake — fix it on the way in.
+    if ($url !== '' && !preg_match('#^https?://#i', $url)) {
+        $url = 'https://' . $url;
+    }
+    return $url;
+}
+
 function account_backups(string $user): array {
     $f = MANIFEST_DIR . "/$user.json";
     return is_readable($f) ? (json_decode(file_get_contents($f), true) ?: []) : [];
@@ -159,7 +169,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'DISK_SAFETY_MARGIN_MB' => $_POST['disk_margin'] ?? null,
             'ENABLE_USER_RESTORE' => (($_POST['user_restore'] ?? '0') === '1') ? '1' : '0',
             'ALERT_EMAIL' => $_POST['alert_email'] ?? null,
-            'S3_ENDPOINT_URL' => trim($_POST['s3_endpoint'] ?? ''),
+            'S3_ENDPOINT_URL' => normalize_endpoint($_POST['s3_endpoint'] ?? ''),
+            'S3_ADDRESSING_STYLE' => in_array($_POST['addressing_style'] ?? '', ['path', 'virtual'], true)
+                ? $_POST['addressing_style'] : 'path',
         ];
         if (!empty($_POST['aws_key'])) $updates['AWS_ACCESS_KEY_ID'] = $_POST['aws_key'];
         if (!empty($_POST['aws_secret'])) $updates['AWS_SECRET_ACCESS_KEY'] = $_POST['aws_secret'];
@@ -469,10 +481,17 @@ foreach ($rows as $r) {
       <label>Region</label>
       <input type="text" name="aws_region" value="<?= htmlspecialchars($conf['AWS_DEFAULT_REGION'] ?? '') ?>">
     </div>
-    <div class="full">
-      <label>S3 Endpoint URL — leave blank for Amazon S3; set it for any S3-compatible provider (Wasabi, Backblaze, IDrive, DigitalOcean, MinIO, Contabo…)</label>
+    <div>
+      <label>S3 Endpoint URL — blank for Amazon S3; set it for any S3-compatible provider</label>
       <input type="text" name="s3_endpoint" placeholder="https://s3.example-provider.com"
              value="<?= htmlspecialchars($conf['S3_ENDPOINT_URL'] ?? '') ?>">
+    </div>
+    <div>
+      <label>URL style (only used with a custom endpoint)</label>
+      <select name="addressing_style">
+        <option value="path" <?= (($conf['S3_ADDRESSING_STYLE'] ?? 'path') === 'path') ? 'selected' : '' ?>>Path — endpoint.com/bucket (safe for bucket names containing a dot)</option>
+        <option value="virtual" <?= (($conf['S3_ADDRESSING_STYLE'] ?? '') === 'virtual') ? 'selected' : '' ?>>Virtual host — bucket.endpoint.com</option>
+      </select>
     </div>
     <div>
       <label>Retention (days)</label>

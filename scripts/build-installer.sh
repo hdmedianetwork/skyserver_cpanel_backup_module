@@ -31,6 +31,7 @@ FILES=(
   bin/restore-worker.sh
   bin/retention-cleanup.sh
   bin/s3-lib.sh
+  bin/s3-test.sh
   bin/self-update.sh
   etc/cron/skyserver-backup
   etc/logrotate/skyserver-backup

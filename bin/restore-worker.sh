@@ -65,7 +65,7 @@ for REQ in "$QUEUE_DIR"/*.json; do
   # A download hands back a time-limited S3 link rather than touching the
   # account, so the user never needs S3 credentials of their own.
   if [ "$TYPE" = "download" ]; then
-    if URL="$(aws s3 presign "s3://${S3_BUCKET}/backups/${USER}/${DATE}/full-account.tar.gz" --expires-in 3600 2>/dev/null)"; then
+    if URL="$(aws_s3 s3 presign "s3://${S3_BUCKET}/backups/${USER}/${DATE}/full-account.tar.gz" --expires-in 3600 2>/dev/null)"; then
       write_download_status "$ID" "$USER" "$URL"
     else
       write_status "$ID" "$USER" "failed" "could not generate a download link"

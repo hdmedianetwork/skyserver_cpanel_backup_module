@@ -137,6 +137,7 @@ function restore_jobs(int $limit = 20): array {
 $message = '';
 $updateAvailable = false;
 $updateLog = '';
+$s3TestOutput = '';
 $conf = read_conf();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -158,6 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'DISK_SAFETY_MARGIN_MB' => $_POST['disk_margin'] ?? null,
             'ENABLE_USER_RESTORE' => (($_POST['user_restore'] ?? '0') === '1') ? '1' : '0',
             'ALERT_EMAIL' => $_POST['alert_email'] ?? null,
+            'S3_ENDPOINT_URL' => trim($_POST['s3_endpoint'] ?? ''),
         ];
         if (!empty($_POST['aws_key'])) $updates['AWS_ACCESS_KEY_ID'] = $_POST['aws_key'];
         if (!empty($_POST['aws_secret'])) $updates['AWS_SECRET_ACCESS_KEY'] = $_POST['aws_secret'];
@@ -213,21 +215,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
     } elseif ($action === 'test_s3') {
-        $bucket = $conf['S3_BUCKET'] ?? '';
-        if ($bucket === '' || $bucket === 'your-bucket-name') {
-            $message = 'S3 test failed: no bucket configured yet.';
-        } else {
-            $cmd = 'AWS_ACCESS_KEY_ID=' . escapeshellarg($conf['AWS_ACCESS_KEY_ID'] ?? '')
-                 . ' AWS_SECRET_ACCESS_KEY=' . escapeshellarg($conf['AWS_SECRET_ACCESS_KEY'] ?? '')
-                 . ' AWS_DEFAULT_REGION=' . escapeshellarg($conf['AWS_DEFAULT_REGION'] ?? 'us-east-1')
-                 . ' aws s3 ls ' . escapeshellarg("s3://$bucket/") . ' --max-items 1 2>&1';
-            $out = trim((string) shell_exec($cmd . '; echo "EXIT:$?"'));
-            if (str_ends_with($out, 'EXIT:0')) {
-                $message = "S3 test passed — bucket \"$bucket\" is reachable and the credentials work.";
-            } else {
-                $message = 'S3 test FAILED: ' . preg_replace('/\s*EXIT:\d+$/', '', $out);
-            }
-        }
+        // bin/s3-test.sh reads the same config the backup jobs do, so the
+        // test exercises exactly the path a real run takes — including the
+        // custom endpoint for S3-compatible providers.
+        $s3TestOutput = trim((string) shell_exec(
+            escapeshellarg(INSTALL_DIR . '/bin/s3-test.sh') . ' 2>&1'));
+        $message = str_contains($s3TestOutput, 'All checks passed')
+            ? 'S3 test passed.'
+            : 'S3 test reported a problem — see the output below.';
 
     } elseif ($action === 'update_check') {
         $out = trim((string) shell_exec(
@@ -471,8 +466,13 @@ foreach ($rows as $r) {
       <input type="text" name="s3_bucket" value="<?= htmlspecialchars($conf['S3_BUCKET'] ?? '') ?>">
     </div>
     <div>
-      <label>AWS Region</label>
+      <label>Region</label>
       <input type="text" name="aws_region" value="<?= htmlspecialchars($conf['AWS_DEFAULT_REGION'] ?? '') ?>">
+    </div>
+    <div class="full">
+      <label>S3 Endpoint URL — leave blank for Amazon S3; set it for any S3-compatible provider (Wasabi, Backblaze, IDrive, DigitalOcean, MinIO, Contabo…)</label>
+      <input type="text" name="s3_endpoint" placeholder="https://s3.example-provider.com"
+             value="<?= htmlspecialchars($conf['S3_ENDPOINT_URL'] ?? '') ?>">
     </div>
     <div>
       <label>Retention (days)</label>
@@ -512,9 +512,12 @@ foreach ($rows as $r) {
   <form method="post" style="padding: 0 18px 16px">
     <button class="btn" name="action" value="test_s3">Test S3 Connection</button>
     <span style="font-size:12px; color: var(--muted); margin-left:8px">
-      Checks the saved bucket and credentials before the first backup run depends on them.
+      Checks reachability, credentials, and the write + delete permissions a real backup needs.
     </span>
   </form>
+  <?php if ($s3TestOutput !== ''): ?>
+    <pre class="logbox"><?= htmlspecialchars($s3TestOutput) ?></pre>
+  <?php endif; ?>
 </div>
 
 <div class="card">

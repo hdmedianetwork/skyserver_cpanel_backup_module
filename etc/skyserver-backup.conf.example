@@ -6,6 +6,11 @@
 S3_BUCKET="your-bucket-name"
 AWS_DEFAULT_REGION="ap-south-1"
 
+# Leave empty for real Amazon S3. For any S3-compatible provider (Wasabi,
+# Backblaze B2, IDrive e2, DigitalOcean Spaces, MinIO, Contabo…) put its
+# endpoint here, e.g. "https://s3.us-west-1.wasabisys.com".
+S3_ENDPOINT_URL=""
+
 # Use an IAM user scoped to ONLY this bucket (s3:PutObject, GetObject,
 # ListBucket, DeleteObject on arn:aws:s3:::your-bucket-name/*). Never reuse
 # root/admin AWS keys here.

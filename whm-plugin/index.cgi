@@ -22,6 +22,32 @@ if (PHP_SAPI === 'cli') {
     header('Content-Type: text/html; charset=utf-8');
 }
 
+// Same reason: the CLI binary never fills $_GET or $_POST. cpsrvd passes the
+// request in the environment (which does reach $_SERVER) and the body on
+// stdin, which CLI leaves unread — so every button on this page posted into
+// an empty $_POST and silently did nothing. Parse the request ourselves.
+if (PHP_SAPI === 'cli') {
+    parse_str((string) ($_SERVER['QUERY_STRING'] ?? ''), $_GET);
+
+    if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST'
+        && stripos((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'application/x-www-form-urlencoded') !== false) {
+        // Bounded by CONTENT_LENGTH: reading stdin to EOF can block until the
+        // client closes the connection.
+        $len  = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+        $body = '';
+        while (strlen($body) < $len && !feof(STDIN)) {
+            $chunk = fread(STDIN, $len - strlen($body));
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+            $body .= $chunk;
+        }
+        parse_str($body, $_POST);
+    }
+
+    $_REQUEST = $_POST + $_GET;
+}
+
 const CONF_FILE     = '/etc/skyserver-backup.conf';
 const LOG_FILE       = '/var/log/skyserver-backup.log';
 const MANIFEST_DIR   = '/var/spool/skyserver-backup/manifests';

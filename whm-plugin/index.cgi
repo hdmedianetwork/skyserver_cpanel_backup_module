@@ -273,66 +273,70 @@ foreach ($rows as $r) {
     $backupsByUser[$r['user']] = account_backups($r['user']);
 }
 ?>
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SkyServer Backup Manager — Admin</title>
+<?php
+// Every rule is scoped under .sky. When this page renders inside WHM's own
+// chrome, bare element selectors like `table` or `h1` would otherwise
+// restyle WHM's sidebar and headings too.
+$SKY_STYLES = <<<'CSS'
 <style>
-  :root { --blue:#2f6fed; --green:#1f9d55; --red:#d64545; --amber:#c98a1f;
-          --bg:#f4f6f9; --card:#fff; --border:#e3e7ee; --text:#24303f; --muted:#6b7688; }
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         background: var(--bg); color: var(--text); margin: 0; padding: 24px; }
-  h1 { font-size: 21px; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
-  .msg { background: #eaf1ff; border: 1px solid #c6d9fb; color: var(--blue);
+  .sky { --blue:#2f6fed; --green:#1f9d55; --red:#d64545; --amber:#c98a1f;
+         --bg:#f4f6f9; --card:#fff; --border:#e3e7ee; --text:#24303f; --muted:#6b7688;
+         font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         color: var(--text); padding: 20px; }
+  .sky * { box-sizing: border-box; }
+  .sky h1 { font-size: 21px; margin: 0 0 4px; }
+  .sky .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .sky .msg { background: #eaf1ff; border: 1px solid #c6d9fb; color: var(--blue);
          padding: 10px 14px; border-radius: 8px; margin-bottom: 18px; font-size: 13px; }
-  .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
-  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  .sky .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 22px; }
+  .sky .stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
           padding: 14px 18px; min-width: 150px; }
-  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-  .stat .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-  .value.ok { color: var(--green); } .value.fail { color: var(--red); }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  .sky .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .sky .stat .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .sky .value.ok { color: var(--green); } .sky .value.fail { color: var(--red); }
+  .sky .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
           margin-bottom: 20px; overflow: hidden; }
-  .card h2 { font-size: 14px; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--border);
+  .sky .card h2 { font-size: 14px; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--border);
              background: #fafbfd; display: flex; justify-content: space-between; align-items: center; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 9px 18px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
-  tr:last-child td { border-bottom: none; }
-  .tag { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 99px; }
-  .tag-success, .tag-ok { background: #e8f8ee; color: var(--green); }
-  .tag-failed, .tag-fail { background: #fdeaea; color: var(--red); }
-  .tag-running, .tag-queued { background: #eaf1ff; color: var(--blue); }
-  .tag-none { background: #f1f3f6; color: var(--muted); }
-  .btn { border: 1px solid var(--border); background: #fff; border-radius: 6px; padding: 7px 14px;
+  .sky table { width: 100%; border-collapse: collapse; margin: 0; }
+  .sky th, .sky td { padding: 9px 18px; text-align: left; font-size: 13px;
+                     border-bottom: 1px solid var(--border); background: none; }
+  .sky th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .sky tr:last-child td { border-bottom: none; }
+  .sky .tag { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 99px; }
+  .sky .tag-success, .sky .tag-ok { background: #e8f8ee; color: var(--green); }
+  .sky .tag-failed, .sky .tag-fail { background: #fdeaea; color: var(--red); }
+  .sky .tag-running, .sky .tag-queued { background: #eaf1ff; color: var(--blue); }
+  .sky .tag-none { background: #f1f3f6; color: var(--muted); }
+  .sky .btn { border: 1px solid var(--border); background: #fff; border-radius: 6px; padding: 7px 14px;
          font-size: 13px; cursor: pointer; color: var(--text); }
-  .btn-primary { background: var(--blue); border-color: var(--blue); color: #fff; }
-  .btn:disabled { opacity: .5; cursor: default; }
-  .empty { padding: 26px 18px; color: var(--muted); font-size: 13px; text-align: center; }
-  form.config { padding: 16px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  form.config label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
-  form.config input { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
-  form.config .full { grid-column: 1 / -1; }
-  form.config select { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
-  .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
-  .brand img { height: 46px; width: auto; max-width: 210px; display: block; }
-  .brand h1 { margin: 0 0 2px; }
-  .brand-actions { margin: 0 0 0 auto; }
-  .logbox { margin: 0; padding: 14px 18px; background: #1e2530; color: #d6dde8;
+  .sky .btn-primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .sky .btn:disabled { opacity: .5; cursor: default; }
+  .sky .empty { padding: 26px 18px; color: var(--muted); font-size: 13px; text-align: center; }
+  .sky form.config { padding: 16px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .sky form.config label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .sky form.config input { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .sky form.config .full { grid-column: 1 / -1; }
+  .sky form.config select { width: 100%; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+  .sky .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+  .sky .brand img { height: 46px; width: auto; max-width: 210px; display: block; }
+  .sky .brand h1 { margin: 0 0 2px; }
+  .sky .brand-actions { margin: 0 0 0 auto; }
+  .sky .logbox { margin: 0; padding: 14px 18px; background: #1e2530; color: #d6dde8;
             font-size: 12px; line-height: 1.5; max-height: 340px; overflow: auto;
             white-space: pre-wrap; word-break: break-word; }
-  form.inline { display: inline; margin: 0; }
-  .restore-form { padding: 16px 18px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
-  .restore-form label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
-  .restore-form select { padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+  .sky form.inline { display: inline; margin: 0; }
+  .sky .restore-form { padding: 16px 18px; display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .sky .restore-form label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .sky .restore-form select { padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
                          font-size: 13px; min-width: 165px; }
 </style>
-</head>
-<body>
+CSS;
+
+// Buffer the page body so it can be dropped either into WHM's own chrome
+// or into a standalone document, without writing the markup twice.
+ob_start();
+?>
 
 <div class="brand">
   <img src="<?= LOGO_URL ?>" alt="SkyServer Backup Manager">
@@ -574,6 +578,45 @@ function fillDatabases() {
     dbs.map(function (d) { return '<option value="' + d + '">Only database: ' + d + '</option>'; }).join('');
 }
 </script>
+<?php
+$body = ob_get_clean();
 
-</body>
-</html>
+/**
+ * WHM's own header/footer (sidebar, breadcrumb, session token) come from
+ * the Perl module Whostmgr::HTMLInterface. Shell out to it and reuse the
+ * real chrome rather than approximating it. Run from inside this CGI the
+ * child inherits the WHM session environment, so the nav links are live.
+ */
+function whm_chrome(string $fn, array $args = []): string {
+    $perl = '/usr/local/cpanel/3rdparty/bin/perl';
+    if (!is_executable($perl)) return '';
+    $cmd = escapeshellarg($perl) . ' -e ' . escapeshellarg(
+        'use Whostmgr::HTMLInterface (); Whostmgr::HTMLInterface::' . $fn . '(@ARGV);'
+    );
+    foreach ($args as $a) {
+        $cmd .= ' ' . escapeshellarg($a);
+    }
+    $out = shell_exec($cmd . ' 2>/dev/null');
+    return is_string($out) ? $out : '';
+}
+
+$header = whm_chrome('defheader', ['SkyServer Backup Manager', '', '/cgi/skyserver_backup/index.cgi']);
+
+// Only trust the chrome if it actually came back as a document; otherwise
+// fall back to a standalone page rather than emitting something broken.
+if (stripos($header, '<html') !== false) {
+    echo $header;
+    echo $SKY_STYLES;
+    echo '<div class="sky">' . $body . '</div>';
+    echo whm_chrome('deffooter');
+} else {
+    echo "<!DOCTYPE html>\n<html>\n<head>\n";
+    echo '<meta charset="utf-8">' . "\n";
+    echo '<meta name="viewport" content="width=device-width, initial-scale=1">' . "\n";
+    echo "<title>SkyServer Backup Manager</title>\n";
+    echo $SKY_STYLES;
+    echo "<style>body { margin:0; background:#f4f6f9; }</style>\n";
+    echo "</head>\n<body>\n";
+    echo '<div class="sky">' . $body . '</div>';
+    echo "\n</body>\n</html>\n";
+}

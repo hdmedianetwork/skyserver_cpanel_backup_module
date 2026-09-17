@@ -1,0 +1,16 @@
+# SkyServer Backup Module - configuration
+# Copy this file to /etc/skyserver-backup.conf and edit it (installer does
+# this automatically on first install). Keep it root-only readable:
+#   chmod 600 /etc/skyserver-backup.conf
+
+S3_BUCKET="your-bucket-name"
+AWS_DEFAULT_REGION="ap-south-1"
+
+# Use an IAM user scoped to ONLY this bucket (s3:PutObject, GetObject,
+# ListBucket, DeleteObject on arn:aws:s3:::your-bucket-name/*). Never reuse
+# root/admin AWS keys here.
+AWS_ACCESS_KEY_ID="REPLACE_ME"
+AWS_SECRET_ACCESS_KEY="REPLACE_ME"
+
+# Backups older than this many days are deleted from S3 automatically.
+RETENTION_DAYS=7

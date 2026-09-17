@@ -47,7 +47,10 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
   PLUGIN_DEST="${THEME_DIR}skyserver_backup"
   mkdir -p "$PLUGIN_DEST"
   cp "$INSTALL_DIR"/plugin/*.live.php "$PLUGIN_DEST/"
-  chmod 644 "$PLUGIN_DEST"/*.live.php
+  # Named after the descriptor's file=> key, which is where cPanel looks for
+  # an imgtype=>icon item's image.
+  cp "$INSTALL_DIR"/plugin/skyserver_backup.png "$PLUGIN_DEST/"
+  chmod 644 "$PLUGIN_DEST"/*.live.php "$PLUGIN_DEST"/skyserver_backup.png
 
   # The icon entry belongs in the theme's own dynamicui directory — that is
   # where cPanel reads menu items from. Without it the pages are served but
@@ -92,7 +95,12 @@ else
 fi
 
 log "Rebuilding cPanel UI caches..."
-/usr/local/cpanel/scripts/rebuild_sprites >/dev/null 2>&1 || true
-/usr/local/cpanel/scripts/rebuildnavigations >/dev/null 2>&1 || true
+# rebuildnavigations is gone as of cPanel 134, and sprites live under either
+# scripts/ or bin/ depending on the version.
+if [ -x /usr/local/cpanel/scripts/rebuild_sprites ]; then
+  /usr/local/cpanel/scripts/rebuild_sprites >/dev/null 2>&1 || true
+elif [ -x /usr/local/cpanel/bin/rebuild_sprites ]; then
+  /usr/local/cpanel/bin/rebuild_sprites >/dev/null 2>&1 || true
+fi
 
 log "Deploy complete (version $(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo unknown))."

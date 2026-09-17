@@ -4,15 +4,54 @@ Daily, automatic cPanel account + database backups to Amazon S3, with a
 self-service restore UI inside every user's cPanel dashboard and a
 WHM admin dashboard for the server owner.
 
-## Install (on a WHM/root shell)
+## Install
+
+There are two installers. Use **standalone** unless you're developing
+against a public clone of this repo — this repo is private, so a plain
+`git clone` on a customer's server won't work without handing out
+credentials.
+
+### Standalone installer (recommended — for distributing to any server)
+
+`install.sh` at the repo root needs `git clone` access to this repo, which
+means it only works for people who have credentials to it. To hand this
+module to yourself on a live server, or to other people/clients, build
+the **self-contained** installer instead — every module file is embedded
+in one `.sh` file (base64), so it needs zero GitHub access at install
+time:
+
+```bash
+scripts/build-installer.sh
+```
+
+This produces `dist/install-standalone.sh`. Upload that one file to
+anywhere you control (your own domain, a private S3 bucket/CDN, a gist,
+etc.) — for example `https://cdn.yourdomain.com/skyserver-install.sh` —
+and then on any WHM/root shell:
+
+```bash
+curl -sSL https://cdn.yourdomain.com/skyserver-install.sh | bash
+```
+
+Rebuild and re-upload it after every change to `bin/`, `etc/`, `plugin/`
+or `whm-plugin/` — it's a build artifact, not something you hand-edit.
+Anyone you give the URL to gets the exact same install, with no repo
+access needed on their end.
+
+### Git-based installer (for local development only)
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/hdmedianetwork/skyserver_cpanel_backup_module/main/install.sh | bash
 ```
 
-This:
-1. Installs dependencies (`git`, `jq`, `awscli`).
-2. Clones this repo into `/opt/skyserver-backup-module`.
+Only works if the machine running it can `git clone` this repo (i.e. it's
+public, or you've set up credentials on that box) — the standalone
+installer above avoids that entirely.
+
+### What either installer does
+
+1. Installs dependencies (`jq`, `awscli`, plus `git` for the git-based one).
+2. Places the module in `/opt/skyserver-backup-module`.
 3. Creates `/etc/skyserver-backup.conf` from the example (you must edit it
    with your S3 bucket and AWS keys).
 4. Installs `/etc/cron.d/skyserver-backup`:

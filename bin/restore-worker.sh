@@ -97,7 +97,7 @@ for REQ in "$QUEUE_DIR"/*.json; do
         ;;
     esac
     if s3_download "backups/${USER}/${DATE}/databases/${DB}.sql.gz" "$WORKDIR/${DB}.sql.gz" \
-       && gunzip -c "$WORKDIR/${DB}.sql.gz" | mysql "$DB"; then
+       && gunzip -c "$WORKDIR/${DB}.sql.gz" | mysql_cmd mysql "$DB"; then
       write_status "$ID" "$USER" "success"
     else
       write_status "$ID" "$USER" "failed" "database restore failed"

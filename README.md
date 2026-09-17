@@ -216,6 +216,40 @@ everything at once:
    restore path works end to end.
 6. Only then set self-service restore to Enabled in the WHM dashboard.
 
+## Troubleshooting
+
+**`mysqldump: Got error: 1045: "Access denied for user 'root'@'localhost'
+(using password: NO)"`**
+
+The MySQL client never saw root's password. It lives in `/root/.my.cnf` on a
+cPanel server, which the client only reads when `$HOME` is `/root` — and it
+isn't when a backup is launched from the WHM dashboard's CGI, or from a shell
+where `HOME` points elsewhere. The scripts now pass that file explicitly
+(`--defaults-extra-file`), so upgrade to this version first:
+
+```bash
+/opt/skyserver-backup-module/bin/self-update.sh apply
+```
+
+If it still fails, the file itself is the problem. Check it:
+
+```bash
+ls -l /root/.my.cnf
+mysql --defaults-extra-file=/root/.my.cnf -e 'SELECT 1'
+```
+
+Missing or rejected, recreate it (`chmod 600`, owned by root):
+
+```ini
+[client]
+user=root
+password="<root mysql password>"
+```
+
+or reset the password in WHM » SQL Services » MySQL Root Password, which
+rewrites the file for you. Keeping the credentials elsewhere is fine — point
+`MYSQL_DEFAULTS_FILE` in `/etc/skyserver-backup.conf` at that file instead.
+
 ## Security notes
 
 - Use an IAM user/policy scoped to only this bucket

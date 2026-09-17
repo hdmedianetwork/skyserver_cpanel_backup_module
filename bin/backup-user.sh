@@ -18,6 +18,11 @@ mkdir -p "$MANIFEST_DIR" "$BACKUP_WORK_DIR"
 
 echo "[*] Backing up account: $USER"
 
+# pkgacct dumps this account's databases too, so a broken MySQL login means
+# a silently incomplete tarball, not just missing .sql.gz files. Prove the
+# credentials work before doing any work at all.
+mysql_check_access || exit 1
+
 # Refuse to start unless the staging area can hold this account. Filling
 # the disk would take every site on this server down, not just the backup.
 HOME_DIR="$(getent passwd "$USER" | cut -d: -f6)"
@@ -66,7 +71,7 @@ DB_LIST=()
 while IFS= read -r DB; do
   [ -z "$DB" ] && continue
   DUMP="$WORKDIR/${DB}.sql.gz"
-  mysqldump --single-transaction --quick "$DB" | gzip > "$DUMP"
+  mysql_cmd mysqldump --single-transaction --quick "$DB" | gzip > "$DUMP"
   if ! gzip -t "$DUMP" 2>/dev/null; then
     echo "[!] Dump of database $DB failed its integrity check — not uploading" >&2
     exit 1

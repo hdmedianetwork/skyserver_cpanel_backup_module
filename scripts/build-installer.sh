@@ -7,7 +7,8 @@
 #
 # Usage:
 #   scripts/build-installer.sh
-#   # then upload dist/install-standalone.sh to your web server
+#   # then upload dist/install-standalone.sh to your web server as
+#   # https://backup.gosecureserver.in/install.sh
 #
 # Re-run this after every change to bin/, etc/, plugin/ or whm-plugin/ and
 # re-upload — the standalone installer is a build artifact, not something
@@ -51,7 +52,7 @@ cat <<'HEADER'
 #
 # Run as root on the WHM/cPanel server you want to protect:
 #
-#   curl -sSL https://<your-domain>/install.sh | bash
+#   curl -sSL https://backup.gosecureserver.in/install.sh | bash
 set -euo pipefail
 
 INSTALL_DIR="/opt/skyserver-backup-module"

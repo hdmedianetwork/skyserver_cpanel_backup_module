@@ -24,14 +24,24 @@ time:
 scripts/build-installer.sh
 ```
 
-This produces `dist/install-standalone.sh`. Upload that one file to
-anywhere you control (your own domain, a private S3 bucket/CDN, a gist,
-etc.) — for example `https://cdn.yourdomain.com/skyserver-install.sh` —
-and then on any WHM/root shell:
+This produces `dist/install-standalone.sh`. Upload that one file to the
+web server you control — for this project that's
+`https://backup.gosecureserver.in/install.sh` — and then on any WHM/root
+shell:
 
 ```bash
-curl -sSL https://cdn.yourdomain.com/skyserver-install.sh | bash
+curl -sSL https://backup.gosecureserver.in/install.sh | bash
 ```
+
+Before trusting that URL in a `| bash` pipeline, confirm the web server
+serves the script as plain text rather than executing or rewriting it:
+
+```bash
+curl -sSL https://backup.gosecureserver.in/install.sh | head -5
+```
+
+You should see the `#!/bin/bash` shebang and the comment header. If you
+see HTML, an error page, or nothing, fix the hosting before installing.
 
 Rebuild and re-upload it after every change to `bin/`, `etc/`, `plugin/`
 or `whm-plugin/` — it's a build artifact, not something you hand-edit.

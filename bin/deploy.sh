@@ -49,7 +49,7 @@ log "Installing cPanel end-user plugin into every theme..."
 ICON_SRC="$INSTALL_DIR/plugin/skyserver_backup.png"
 ICON_TMP="$(mktemp)"
 if curl -fsS --max-time 15 -o "$ICON_TMP" \
-     "https://ik.imagekit.io/hdmn/skybackupmanager.png?tr=w-48,h-48,cm-pad_resize" \
+     "https://ik.imagekit.io/hdmn/skybackupmanager.png?tr=w-96,h-96,cm-pad_resize" \
    && head -c 8 "$ICON_TMP" | grep -qa PNG; then
   ICON_SRC="$ICON_TMP"
   log "  Menu icon taken from the SkyServer logo."
@@ -62,10 +62,16 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
   PLUGIN_DEST="${THEME_DIR}skyserver_backup"
   mkdir -p "$PLUGIN_DEST"
   cp "$INSTALL_DIR"/plugin/*.live.php "$INSTALL_DIR"/plugin/liveapi.php "$PLUGIN_DEST/"
-  # Named after the descriptor's file=> key, which is where cPanel looks for
-  # an imgtype=>icon item's image.
-  cp "$ICON_SRC" "$PLUGIN_DEST/skyserver_backup.png"
-  chmod 644 "$PLUGIN_DEST"/*.php "$PLUGIN_DEST"/skyserver_backup.png
+  chmod 644 "$PLUGIN_DEST"/*.php
+
+  # The theme reads a menu item's icon from its own application_icons
+  # directory, named after the descriptor's file=> key — the same place
+  # letsencrypt-cpanel.png and lvephpsel.svg sit. Not the plugin's own
+  # directory, which is where this landed before and was ignored.
+  mkdir -p "${THEME_DIR}assets/application_icons"
+  cp "$ICON_SRC" "${THEME_DIR}assets/application_icons/skyserver_backup.png"
+  chmod 644 "${THEME_DIR}assets/application_icons/skyserver_backup.png"
+  rm -f "$PLUGIN_DEST/skyserver_backup.png"
 
   # The icon entry belongs in the theme's own dynamicui directory — that is
   # where cPanel reads menu items from. Without it the pages are served but

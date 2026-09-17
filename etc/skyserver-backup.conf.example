@@ -35,5 +35,10 @@ DISK_SAFETY_MARGIN_MB=2048
 # cannot be undone.
 ENABLE_USER_RESTORE=0
 
+# File holding root's MySQL credentials, passed to mysqldump/mysql as
+# --defaults-extra-file. On cPanel this is /root/.my.cnf and you should not
+# need to change it; set it only if you keep the credentials elsewhere.
+MYSQL_DEFAULTS_FILE="/root/.my.cnf"
+
 # Address to email when a backup run has failures. Empty disables alerts.
 ALERT_EMAIL=""

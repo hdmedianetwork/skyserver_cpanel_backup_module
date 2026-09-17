@@ -21,6 +21,13 @@ source "$SKYSERVER_CONF"
 : "${DISK_SAFETY_MARGIN_MB:=2048}"
 : "${ENABLE_USER_RESTORE:=0}"
 : "${ALERT_EMAIL:=}"
+# Where mysqldump/mysql find root's MySQL credentials. Nothing here may
+# assume $HOME is /root: when a backup is triggered from the WHM plugin the
+# CGI environment carries a different HOME, root's ~/.my.cnf is never read,
+# and mysqldump connects with no password at all — "Access denied for user
+# 'root'@'localhost' (using password: NO)". Naming the file explicitly makes
+# the credentials independent of whoever launched us.
+: "${MYSQL_DEFAULTS_FILE:=/root/.my.cnf}"
 # Empty means real AWS S3. Set it for any S3-compatible provider
 # (Wasabi, Backblaze B2, IDrive e2, DigitalOcean Spaces, MinIO, Contabo…).
 : "${S3_ENDPOINT_URL:=}"
@@ -81,4 +88,46 @@ s3_list() { # <prefix>
 
 s3_rm() { # <s3_key>
   aws_s3 s3 rm "s3://${S3_BUCKET}/$1" --only-show-errors
+}
+
+# Every MySQL client call goes through here so the credentials file is never
+# forgotten on one of them.
+mysql_cmd() { # <mysql|mysqldump|mysqladmin> [args...]
+  local bin="$1"
+  shift
+  if [ -n "$MYSQL_DEFAULTS_FILE" ] && [ -r "$MYSQL_DEFAULTS_FILE" ]; then
+    # --defaults-extra-file has to be the first argument, and is read after
+    # the system my.cnf, so socket/port settings there still apply.
+    "$bin" --defaults-extra-file="$MYSQL_DEFAULTS_FILE" "$@"
+  else
+    "$bin" "$@"
+  fi
+}
+
+# Checked up front so a run fails with the fix in hand, instead of
+# discovering the problem halfway through as a cryptic mysqldump error.
+mysql_check_access() {
+  local err
+  if err="$(mysql_cmd mysql --batch --skip-column-names -e 'SELECT 1' 2>&1)"; then
+    return 0
+  fi
+  echo "[!] Cannot connect to MySQL/MariaDB as root: $err" >&2
+  if [ ! -r "$MYSQL_DEFAULTS_FILE" ]; then
+    cat >&2 <<EOF
+[!] $MYSQL_DEFAULTS_FILE is missing or unreadable, and that is where a cPanel
+    server keeps root's MySQL password. Recreate it (chmod 600, owned by root):
+        [client]
+        user=root
+        password="<root mysql password>"
+    or reset the password in WHM » SQL Services » MySQL Root Password, which
+    rewrites the file for you. If the credentials live somewhere else, set
+    MYSQL_DEFAULTS_FILE in $SKYSERVER_CONF.
+EOF
+  else
+    cat >&2 <<EOF
+[!] $MYSQL_DEFAULTS_FILE exists but its credentials were rejected. Verify with:
+        mysql --defaults-extra-file=$MYSQL_DEFAULTS_FILE -e 'SELECT 1'
+EOF
+  fi
+  return 1
 }

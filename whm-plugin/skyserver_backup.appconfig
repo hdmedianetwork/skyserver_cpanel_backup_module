@@ -1,0 +1,5 @@
+name=SkyServer Backup Manager
+url=/cgi/skyserver_backup/index.cgi
+user=root
+acl=all
+group=backup

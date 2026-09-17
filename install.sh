@@ -18,6 +18,7 @@ DYNAMICUI_DIR="/var/cpanel/dynamicui"
 FRONTEND_BASE="/usr/local/cpanel/base/frontend"
 CRON_FILE="/etc/cron.d/skyserver-backup"
 SPOOL_DIR="/var/spool/skyserver-backup"
+WHM_CGI_DIR="/usr/local/cpanel/whostmgr/docroot/cgi/skyserver_backup"
 
 log()  { echo "[skyserver-backup] $*"; }
 die()  { echo "[skyserver-backup] ERROR: $*" >&2; exit 1; }
@@ -70,10 +71,21 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
   [ -d "$THEME_DIR" ] || continue
   PLUGIN_DEST="${THEME_DIR}skyserver_backup"
   mkdir -p "$PLUGIN_DEST"
-  cp "$INSTALL_DIR/plugin/index.live.php" "$PLUGIN_DEST/"
+  cp "$INSTALL_DIR"/plugin/*.live.php "$PLUGIN_DEST/"
 done
 mkdir -p "$DYNAMICUI_DIR"
 cp "$INSTALL_DIR/plugin/skyserver_backup.conf" "$DYNAMICUI_DIR/dynamicui_skyserver_backup.conf"
+
+log "Installing WHM admin dashboard..."
+PHP_BIN="$(command -v php || true)"
+[ -z "$PHP_BIN" ] && [ -x /usr/local/cpanel/3rdparty/bin/php ] && PHP_BIN="/usr/local/cpanel/3rdparty/bin/php"
+[ -n "$PHP_BIN" ] || die "No PHP binary found — required for the WHM admin dashboard."
+
+mkdir -p "$WHM_CGI_DIR"
+sed "1s|.*|#!${PHP_BIN}|" "$INSTALL_DIR/whm-plugin/index.cgi" > "$WHM_CGI_DIR/index.cgi"
+chmod 750 "$WHM_CGI_DIR/index.cgi"
+/usr/local/cpanel/bin/register_appconfig "$INSTALL_DIR/whm-plugin/skyserver_backup.appconfig" >/dev/null 2>&1 \
+  || log "  (register_appconfig failed or is unavailable — add the WHM entry manually, see README)"
 
 log "Rebuilding cPanel UI caches..."
 /usr/local/cpanel/scripts/rebuild_sprites >/dev/null 2>&1 || true
@@ -82,7 +94,9 @@ log "Rebuilding cPanel UI caches..."
 echo
 log "Install complete."
 log "Next steps:"
-log "  1) Edit $CONF_FILE — set S3_BUCKET, AWS_DEFAULT_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY."
+log "  1) Edit $CONF_FILE — set S3_BUCKET, AWS_DEFAULT_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY"
+log "     (or use the WHM admin dashboard's config form instead)."
 log "  2) Test a manual backup run:  $INSTALL_DIR/bin/backup-all.sh"
 log "  3) Daily backups then run automatically at 02:00 via /etc/cron.d/skyserver-backup."
-log "  4) Each cPanel user will see 'SkyServer Backup Manager' under the Files section."
+log "  4) Admin: WHM → Plugins → SkyServer Backup Manager."
+log "  5) Each cPanel user will see 'SkyServer Backup Manager' under the Files section."

@@ -14,19 +14,24 @@ QUEUE_DIR="/var/spool/skyserver-backup/restore-requests"
 STATUS_DIR="/var/spool/skyserver-backup/restore-status"
 mkdir -p "$QUEUE_DIR" "$STATUS_DIR"
 
+write_status() { # <id> <user> <status> [error]
+  jq -n --arg id "$1" --arg user "$2" --arg status "$3" --arg error "${4:-}" --arg ts "$(date -Iseconds)" \
+    '{id: $id, user: $user, status: $status, updated_at: $ts} + (if $error != "" then {error: $error} else {} end)' \
+    > "$STATUS_DIR/${1}.json"
+}
+
 shopt -s nullglob
 for REQ in "$QUEUE_DIR"/*.json; do
   ID="$(basename "$REQ" .json)"
   USER="$(jq -r .user "$REQ")"
   TYPE="$(jq -r .type "$REQ")"
   DATE="$(jq -r .date "$REQ")"
-  STATUS_FILE="$STATUS_DIR/${ID}.json"
 
-  echo "{\"status\":\"running\"}" > "$STATUS_FILE"
+  write_status "$ID" "$USER" "running"
 
   # Ownership check: the request must name a real cPanel account.
   if ! whmapi1 listaccts --output=jsonpretty | grep -qP "\"user\"\s*:\s*\"${USER}\""; then
-    echo "{\"status\":\"failed\",\"error\":\"unknown user\"}" > "$STATUS_FILE"
+    write_status "$ID" "$USER" "failed" "unknown user"
     rm -f "$REQ"
     continue
   fi
@@ -36,9 +41,9 @@ for REQ in "$QUEUE_DIR"/*.json; do
   if [ "$TYPE" = "full" ]; then
     if s3_download "backups/${USER}/${DATE}/full-account.tar.gz" "$WORKDIR/cpmove-${USER}.tar.gz" \
        && /scripts/restorepkg "$WORKDIR/cpmove-${USER}.tar.gz" >"$WORKDIR/restore.log" 2>&1; then
-      echo "{\"status\":\"success\"}" > "$STATUS_FILE"
+      write_status "$ID" "$USER" "success"
     else
-      echo "{\"status\":\"failed\",\"error\":\"full account restore failed\"}" > "$STATUS_FILE"
+      write_status "$ID" "$USER" "failed" "full account restore failed"
     fi
 
   elif [ "$TYPE" = "database" ]; then
@@ -48,20 +53,20 @@ for REQ in "$QUEUE_DIR"/*.json; do
     case "$DB" in
       "${USER}_"*) ;;
       *)
-        echo "{\"status\":\"failed\",\"error\":\"database does not belong to user\"}" > "$STATUS_FILE"
+        write_status "$ID" "$USER" "failed" "database does not belong to user"
         rm -rf "$WORKDIR" "$REQ"
         continue
         ;;
     esac
     if s3_download "backups/${USER}/${DATE}/databases/${DB}.sql.gz" "$WORKDIR/${DB}.sql.gz" \
        && gunzip -c "$WORKDIR/${DB}.sql.gz" | mysql "$DB"; then
-      echo "{\"status\":\"success\"}" > "$STATUS_FILE"
+      write_status "$ID" "$USER" "success"
     else
-      echo "{\"status\":\"failed\",\"error\":\"database restore failed\"}" > "$STATUS_FILE"
+      write_status "$ID" "$USER" "failed" "database restore failed"
     fi
 
   else
-    echo "{\"status\":\"failed\",\"error\":\"unknown request type\"}" > "$STATUS_FILE"
+    write_status "$ID" "$USER" "failed" "unknown request type"
   fi
 
   rm -rf "$WORKDIR"

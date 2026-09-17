@@ -1,7 +1,8 @@
 # SkyServer cPanel Backup Module
 
 Daily, automatic cPanel account + database backups to Amazon S3, with a
-self-service restore button inside every user's cPanel dashboard.
+self-service restore UI inside every user's cPanel dashboard and a
+WHM admin dashboard for the server owner.
 
 ## Install (on a WHM/root shell)
 
@@ -21,13 +22,40 @@ This:
      by users (near-instant, cheap no-op when the queue is empty).
 5. Adds a **SkyServer Backup Manager** entry to every cPanel theme, under
    the Files section, for every end user.
+6. Registers a **SkyServer Backup Manager** WHM plugin (via AppConfig) for
+   the admin, under WHM → Plugins.
 
-After install, edit the config and do a manual test run:
+After install, either edit the config file or use the WHM dashboard's
+config form, then do a manual test run:
 
 ```bash
 nano /etc/skyserver-backup.conf
 /opt/skyserver-backup-module/bin/backup-all.sh
 ```
+
+## Admin dashboard (WHM)
+
+**WHM → Plugins → SkyServer Backup Manager** (`whm-plugin/index.cgi`):
+
+- Accounts table — every cPanel account, last backup date/size, database
+  count, total backup count.
+- Last run summary — success/fail counts, start/finish time, which
+  accounts failed.
+- **Run Backup Now** — triggers `backup-all.sh` in the background on
+  demand (disabled while a run is already in progress).
+- Recent restore jobs — who requested what, status, and any error.
+- S3 & retention config form — edit bucket, region, retention days, and
+  (optionally) rotate the AWS keys without touching the shell.
+
+## User dashboard (cPanel)
+
+Inside cPanel → Files → **SkyServer Backup Manager** (`plugin/index.live.php`):
+
+- Stat cards: total backups, last backup date/size, database count.
+- One-click **Restore** per account backup or per database, with a
+  confirmation prompt.
+- Live status badge (queued → running → success/failed) that polls
+  `status.live.php` every few seconds — no page reload needed.
 
 ## How it works
 
@@ -45,8 +73,14 @@ cron (root, daily)
 cPanel user dashboard
   └─ plugin/index.live.php ("SkyServer Backup Manager")
        ├─ reads the user's own manifest.json (no S3 credentials exposed)
-       ├─ user clicks Restore
-       └─ writes a request into /var/spool/skyserver-backup/restore-requests/
+       ├─ user clicks Restore → plugin/action.live.php queues the request
+       └─ plugin/status.live.php polled by JS until success/failed
+
+WHM admin dashboard
+  └─ whm-plugin/index.cgi ("SkyServer Backup Manager", root only)
+       ├─ reads manifests/, restore-status/ and the log for the overview
+       ├─ "Run Backup Now" → backs up all accounts on demand
+       └─ config form writes /etc/skyserver-backup.conf
 
 cron (root, every minute)
   └─ bin/restore-worker.sh

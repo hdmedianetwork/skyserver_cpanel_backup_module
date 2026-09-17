@@ -1,0 +1,8 @@
+# SkyServer Backup Module cron jobs — installed to /etc/cron.d/skyserver-backup
+# __INSTALL_DIR__ is substituted with the real install path by install.sh
+
+# Daily full account + per-database backup for every cPanel account, uploaded to S3
+0 2 * * * root __INSTALL_DIR__/bin/backup-all.sh
+
+# Process user-triggered restore requests (queue is normally empty; cheap no-op)
+* * * * * root __INSTALL_DIR__/bin/restore-worker.sh

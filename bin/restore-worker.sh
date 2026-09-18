@@ -12,7 +12,20 @@ source "$SCRIPT_DIR/s3-lib.sh"
 
 QUEUE_DIR="/var/spool/skyserver-backup/restore-requests"
 STATUS_DIR="/var/spool/skyserver-backup/restore-status"
+LOCK_FILE="/var/spool/skyserver-backup/restore-worker.lock"
+LOG="/var/log/skyserver-backup.log"
 mkdir -p "$QUEUE_DIR" "$STATUS_DIR"
+
+# cron starts this every minute, and a full-account restore runs for far
+# longer than that. Without a lock the next tick picks up the same request —
+# it is only removed once the restore finishes — and runs a second
+# /scripts/restorepkg over the same account while the first is still going.
+exec 201>"$LOCK_FILE"
+if ! flock -n 201; then
+  exit 0   # the previous run is still working; nothing to do
+fi
+
+log() { echo "[restore] $*" >> "$LOG"; }
 
 # The plugin runs as the cPanel account, so it needs to traverse down here
 # (0751: traversal, no listing) and to drop a request file into the queue.
@@ -48,6 +61,37 @@ write_running() { # <id> <user> <step> <of> <message> [percent] [detail]
      + (if $detail != "" then {detail: $detail} else {} end)' \
     > "$STATUS_DIR/${1}.json"
   own_status "$1" "$2"
+}
+
+# Is this a real account on this server?
+#
+#   0  yes
+#   1  no such account
+#   2  could not be determined — prints why on stdout
+#
+# The third answer is the point. whmapi1 exits 0 even when the API call
+# itself failed: the error lives in metadata.result, and an error payload
+# parses exactly like an empty account list. Grepping the raw JSON for the
+# username could not tell those apart, so a transient WHM failure was
+# reported to the customer as "unknown user" and their request was deleted.
+account_exists() { # <user>
+  local user="$1" out result
+  if ! out="$(whmapi1 listaccts --output=jsonpretty 2>&1)"; then
+    printf '%s' "$out" | tr '\n' ' '
+    return 2
+  fi
+
+  result="$(printf '%s' "$out" | jq -r '.metadata.result // empty' 2>/dev/null || true)"
+  if [ "$result" != "1" ]; then
+    printf '%s' "$out" | jq -r '.metadata.reason // "whmapi1 returned an unparseable reply"' 2>/dev/null \
+      || printf 'whmapi1 returned an unparseable reply'
+    return 2
+  fi
+
+  if printf '%s' "$out" | jq -e --arg u "$user" '[.data.acct[]?.user] | index($u) != null' >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 # Pulls an object down while reporting how far along it is, by watching the
@@ -110,6 +154,20 @@ for REQ in "$QUEUE_DIR"/*.json; do
   DATE="$(jq -r .date "$REQ")"
   SOURCE="$(jq -r '.source // "user"' "$REQ")"
 
+  # A request that cannot be read is a broken request, not a missing
+  # account, and saying so is the difference between a fixable report and a
+  # baffling one.
+  case "$USER" in
+    ''|null) USER="" ;;
+    *[!a-zA-Z0-9_]*) USER="" ;;
+  esac
+  if [ -z "$USER" ]; then
+    write_status "$ID" "unknown" "failed" "this request could not be read — please try again"
+    log "request $ID has no usable user field — dropping it"
+    rm -f "$REQ"
+    continue
+  fi
+
   write_status "$ID" "$USER" "running"
 
   # Re-check here rather than trusting the plugin's own check: this is the
@@ -122,20 +180,24 @@ for REQ in "$QUEUE_DIR"/*.json; do
     continue
   fi
 
-  # Ownership check: the request must name a real cPanel account.
-  #
-  # "WHM would not answer" and "that account does not exist" are different
-  # things, and treating the first as the second is destructive: the request
-  # is the only record of what the customer asked for, so a server-side
-  # hiccup must never be what deletes it.
-  if ! ACCTS="$(whmapi1 listaccts --output=jsonpretty 2>&1)"; then
-    write_status "$ID" "$USER" "failed" "could not reach WHM to verify the account — retrying"
-    echo "[!] whmapi1 listaccts failed while checking $USER: $(printf '%s' "$ACCTS" | tr '\n' ' ')" >&2
+  # Ownership check. "WHM could not tell us" and "that account does not
+  # exist" are different things, and treating the first as the second is
+  # destructive: the request is the only record of what the customer asked
+  # for, so a server-side hiccup must never be what deletes it.
+  set +e
+  ACCT_WHY="$(account_exists "$USER")"
+  ACCT_RC=$?
+  set -e
+
+  if [ "$ACCT_RC" = "2" ]; then
+    write_status "$ID" "$USER" "failed" "could not verify your account with the server — retrying"
+    log "could not verify $USER for request $ID: $ACCT_WHY"
     continue   # $REQ stays in the queue for the next run
   fi
 
-  if ! printf '%s' "$ACCTS" | grep -qP "\"user\"\s*:\s*\"${USER}\""; then
+  if [ "$ACCT_RC" != "0" ]; then
     write_status "$ID" "$USER" "failed" "unknown user"
+    log "request $ID names $USER, which WHM does not list as an account — dropping it"
     rm -f "$REQ"
     continue
   fi

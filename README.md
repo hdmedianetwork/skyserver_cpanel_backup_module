@@ -347,6 +347,29 @@ grep '^PATH=' /etc/cron.d/skyserver-backup
 tail -n 40 /var/log/skyserver-backup.log
 ```
 
+**A restore fails with "unknown user" for an account that plainly exists**
+
+Fixed in 0.8.1. `whmapi1` exits 0 even when the API call itself failed — the
+error lives in `metadata.result` and `metadata.reason`, so an error payload
+parses exactly like an empty account list. The worker grepped the raw JSON
+for the username, could not tell those two apart, and reported a transient
+WHM failure to the customer as "unknown user" — then deleted the request,
+which was the only record of what they had asked for. Because it depends on
+whether WHM answers cleanly at that moment, it was intermittent: a download
+would work and a restore a minute later would not.
+
+The check now reads `metadata.result` and parses the account list with `jq`,
+and has three answers instead of two: the account exists, it does not, or it
+could not be determined. Only the middle one discards the request; the third
+leaves it queued, tells the customer the server could not be reached, and
+writes the real reason to `/var/log/skyserver-backup.log` (visible in the
+WHM dashboard's Activity Log).
+
+The same release gives the worker an `flock`. cron starts it every minute and
+a full-account restore runs for far longer than that, so the next tick used
+to pick the same request up again and run a second `/scripts/restorepkg`
+over the same account while the first was still going.
+
 **A bucket name with a dot in it**
 
 `my.bucket` cannot be reached with virtual-host addressing — the bucket

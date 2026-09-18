@@ -191,10 +191,7 @@ ob_start();
     return progressBlock(j);
   }
 
-  function actions(type, date, db) {
-    var k = key(type, date, db);
-    if (JOBS[k]) return jobCell(k);
-
+  function buttons(type, date, db) {
     var attrs = 'data-date="' + esc(date) + '"' + (db ? ' data-db="' + esc(db) + '"' : '');
     var out = '';
     if (type === 'account') {
@@ -205,6 +202,21 @@ ob_start();
              (db ? 'database' : 'full') + '" ' + attrs + '>Restore</button>';
     }
     return out;
+  }
+
+  function actions(type, date, db) {
+    var k = key(type, date, db);
+    var j = JOBS[k];
+    if (!j) return buttons(type, date, db);
+
+    // While a job is in flight its progress replaces the buttons, so a
+    // second one cannot be started on the same row. Once it has finished —
+    // ready, done or failed — the result stays visible but the buttons come
+    // back, so a download can be taken again and a failure retried without
+    // reloading the page.
+    var done = (j.status === 'ready' || j.status === 'success' || j.status === 'failed');
+    return done ? jobCell(k) + '<div style="margin-top:7px">' + buttons(type, date, db) + '</div>'
+                : jobCell(k);
   }
 
   function renderBackups() {

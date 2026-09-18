@@ -62,6 +62,7 @@ const INSTALL_DIR    = '/opt/skyserver-backup-module';
 const LOCK_FILE       = '/var/spool/skyserver-backup/backup.lock';
 const USER_RESTORE_MARKER = '/var/spool/skyserver-backup/user-restore-enabled';
 const QUEUE_DIR       = '/var/spool/skyserver-backup/restore-requests';
+const RUN_STATE_FILE  = '/var/spool/skyserver-backup/run-state.json';
 const LOGO_URL        = 'https://ik.imagekit.io/hdmn/skybackupmanager.png';
 
 // The stylesheet and the shared front-end runtime, which the end-user
@@ -170,6 +171,38 @@ function latest_run_summary(): array {
         'failed_users' => array_values(array_filter(array_map(function ($l) {
             return preg_match('/\[FAIL\] (\S+)/', $l, $mm) ? $mm[1] : null;
         }, explode("\n", $last)))),
+    ];
+}
+
+/**
+ * Where the current or last run got to. bin/backup-all.sh rewrites this
+ * after every account, so it survives the machine going down mid-run — which
+ * is the whole point: it is what "Resume" resumes from.
+ */
+function run_state(): ?array {
+    if (!is_readable(RUN_STATE_FILE)) {
+        return null;
+    }
+    $data = json_decode((string) @file_get_contents(RUN_STATE_FILE), true);
+    if (!is_array($data) || empty($data['accounts'])) {
+        return null;
+    }
+    $total = count($data['accounts']);
+    $done  = count($data['done'] ?? []);
+    return [
+        'date'      => $data['date'] ?? null,
+        'status'    => $data['status'] ?? 'unknown',
+        'current'   => $data['current'] ?? '',
+        'started_at'=> $data['started_at'] ?? null,
+        'updated_at'=> $data['updated_at'] ?? null,
+        'total'     => $total,
+        'done'      => $done,
+        'failed'    => count($data['failed'] ?? []),
+        'remaining' => max(0, $total - $done),
+        // Only worth offering when there is something left of today's run.
+        'resumable' => ($data['date'] ?? '') === date('Y-m-d')
+                       && ($data['status'] ?? '') !== 'finished'
+                       && ($total - $done) > 0,
     ];
 }
 
@@ -293,6 +326,7 @@ function dashboard_state(): array {
             'unprotected' => $unprotected,
             'bytes'       => $totalBytes,
         ],
+        'run'          => run_state(),
         'configured'   => ($conf['S3_BUCKET'] ?? '') !== '' && ($conf['S3_BUCKET'] ?? '') !== 'your-bucket-name',
         'server_time'  => date('c'),
     ];
@@ -312,7 +346,7 @@ if ($isApi) {
     // Anything that changes the server is POST-only, so a stray GET — a
     // prefetch, a bookmarked URL, an image tag on another page — can never
     // kick off a backup or a restore.
-    $mutating = ['run_now', 'backup_user', 'admin_restore', 'save_config',
+    $mutating = ['run_now', 'resume_run', 'backup_user', 'admin_restore', 'save_config',
                  'test_s3', 'update_apply'];
     if (in_array($apiAction, $mutating, true) && !$isPost) {
         http_response_code(405);
@@ -333,6 +367,19 @@ if ($isApi) {
             }
             shell_exec('nohup ' . escapeshellarg(INSTALL_DIR . '/bin/backup-all.sh') . ' > /dev/null 2>&1 &');
             json_out(['ok' => true, 'message' => 'Backup run started — this page will follow along.']);
+
+        case 'resume_run':
+            if (is_backup_running()) {
+                json_out(['ok' => false, 'error' => 'A backup run is already in progress.']);
+            }
+            $rs = run_state();
+            if (!$rs || !$rs['resumable']) {
+                json_out(['ok' => false, 'error' => 'There is no interrupted run from today to resume.']);
+            }
+            shell_exec('nohup ' . escapeshellarg(INSTALL_DIR . '/bin/backup-all.sh')
+                . ' --resume > /dev/null 2>&1 &');
+            json_out(['ok' => true,
+                      'message' => "Resuming — {$rs['done']} of {$rs['total']} accounts were already done."]);
 
         case 'backup_user':
             $target = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['user'] ?? '');
@@ -576,10 +623,31 @@ ob_start();
 
   function renderBanner() {
     var out = '';
+    var r = STATE.run;
+
     if (STATE.running) {
+      var where = r && r.total
+        ? ' <b>' + r.done + ' of ' + r.total + '</b> done' +
+          (r.current ? ', now on <b>' + esc(r.current) + '</b>' : '') + '.'
+        : '';
       out += '<div class="note note-ok" style="margin-bottom:14px">' + svg('zap') +
-             '<div><b>A backup run is in progress.</b> This page is following it live — ' +
-             'the accounts table and the log below update on their own.</div></div>';
+             '<div style="flex:1 1 auto"><b>A backup run is in progress.</b>' + where +
+             ' This page is following it live.' +
+             (r && r.total
+               ? '<div class="bar"><i style="width:' +
+                 Math.round(r.done / r.total * 100) + '%"></i></div>' : '') +
+             '</div></div>';
+    } else if (r && r.resumable) {
+      out += '<div class="note note-warn" style="margin-bottom:14px">' + svg('alert') +
+             '<div style="flex:1 1 auto"><b>The last run did not finish.</b> ' +
+             r.done + ' of ' + r.total + ' accounts were backed up' +
+             (r.current ? ', and it stopped on <b>' + esc(r.current) + '</b>' : '') + '. ' +
+             'Resuming carries on with the remaining <b>' + r.remaining + '</b> — the ones ' +
+             'already done are left alone.' +
+             '<div class="bar"><i style="width:' + Math.round(r.done / r.total * 100) +
+               '%;background:var(--warn)"></i></div></div>' +
+             '<button class="btn btn-primary btn-sm" data-act="resume-run" style="margin-left:auto">' +
+             'Resume run</button></div>';
     }
     if (!STATE.configured) {
       out += '<div class="note note-warn" style="margin-bottom:14px">' + svg('alert') +
@@ -639,7 +707,10 @@ ob_start();
           '<div class="hint">Daily at 02:00 by cron, or on demand from here.</div></div>' +
           (STATE.running
             ? '<span class="pill pill-info pill-live">running now</span>'
-            : '<button class="btn btn-primary" data-act="run-now" data-icon="play">Run backup now</button>') +
+            : ((STATE.run && STATE.run.resumable
+                 ? '<button class="btn btn-primary" data-act="resume-run" data-icon="play">' +
+                   'Resume (' + STATE.run.remaining + ' left)</button> ' : '') +
+               '<button class="btn" data-act="run-now" data-icon="refresh">Run full backup</button>')) +
         '</header>' +
         '<div class="body">' +
           '<dl class="kv">' +
@@ -647,6 +718,12 @@ ob_start();
             '<dt>Last finished</dt><dd>' +
               esc(s.aborted ? 'aborted ' + (s.abort_at || '')
                   : (s.finished || (STATE.running ? 'still running' : '—'))) + '</dd>' +
+            (STATE.run && STATE.run.total
+              ? '<dt>Progress</dt><dd>' + STATE.run.done + ' of ' + STATE.run.total +
+                ' accounts' + (STATE.run.failed ? ' · ' + STATE.run.failed + ' failed' : '') +
+                (STATE.run.status === 'interrupted'
+                  ? ' <span class="pill pill-warn">interrupted</span>' : '') + '</dd>'
+              : '') +
             '<dt>Result</dt><dd>' +
               (s.aborted
                 ? '<span class="pill pill-bad">stopped before backing up anything</span>'
@@ -991,6 +1068,28 @@ ob_start();
     }).catch(function () {});
   }
 
+  function onResumeRun(btn) {
+    var r = STATE.run || {};
+    modal({
+      icon: 'play',
+      title: 'Resume the interrupted run?',
+      confirmLabel: 'Resume',
+      body: '<p>Carries on with the <b>' + (r.remaining || 0) + '</b> accounts that were not ' +
+            'reached, and leaves the <b>' + (r.done || 0) + '</b> already backed up today alone.</p>' +
+            '<ul><li>Accounts that failed are tried again.</li>' +
+            '<li>Nothing already uploaded is re-uploaded.</li></ul>'
+    }).then(function (yes) {
+      if (!yes) return;
+      withBusy(btn, api('resume_run', { go: '1' })).then(function (res) {
+        if (!res.ok) { toast('bad', res.error); return; }
+        toast('ok', res.message);
+        STATE.running = true;
+        renderDynamic();
+        showTab('logs');
+      }).catch(function () {});
+    });
+  }
+
   function onRunNow(btn) {
     withBusy(btn, api('run_now', { go: '1' })).then(function (res) {
       if (!res.ok) { toast('bad', res.error); return; }
@@ -1186,6 +1285,7 @@ ob_start();
     var act = btn.dataset.act;
 
     if (act === 'run-now')          onRunNow(btn);
+    else if (act === 'resume-run')  onResumeRun(btn);
     else if (act === 'backup-user') onBackupUser(btn, btn.dataset.user);
     else if (act === 'restore')     openRestore(btn.dataset.user || null);
     else if (act === 'test-s3')     onTestS3(btn);
@@ -1208,6 +1308,8 @@ ob_start();
   $('sky-banner').addEventListener('click', function (e) {
     if (e.target.id === 'sky-update-apply') onUpdateApply(e.target);
   });
+
+
 
   // ---------------------------------------------------------------- init
   UI.initTheme();

@@ -206,6 +206,24 @@ the links themselves rather than a class name, is bounded, and refuses to
 touch any block that also contains the panel, so on a layout it does not
 recognise it changes nothing.
 
+### Resuming an interrupted run
+
+A run over a couple of hundred accounts takes hours, and a server that goes
+down in the middle of one should not mean starting again from the first
+account — the work already in S3 is still good.
+
+`bin/backup-all.sh` rewrites `/var/spool/skyserver-backup/run-state.json`
+after every account, recording the full account list and which of them are
+done. `backup-all.sh --resume` reads it and carries on with the rest;
+accounts that failed are retried, accounts that succeeded are left alone. It
+only resumes a run from today, and resuming one that already finished does
+nothing rather than quietly re-uploading everything.
+
+The dashboard surfaces it: when the last run was cut short, the Overview
+tab says how far it got and offers **Resume (N left)** beside **Run full
+backup**. While a run is going the same state drives a live *90 of 187, now
+on sharmaho* progress bar.
+
 ### WHM admin dashboard
 
 A single page that never reloads. PHP renders the shell once with a snapshot

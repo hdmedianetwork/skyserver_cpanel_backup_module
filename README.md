@@ -235,6 +235,31 @@ full backup** is the honest name for it.
 While a run is going the same state drives a live *90 of 187, now on
 sharmaho* progress bar.
 
+### When something inside an account fails
+
+Two failures used to cost an account its entire backup, and both are common
+enough to hit a server with a couple of hundred accounts on any given night.
+
+**A crashed database table.** `mysqldump` stops with *Table 'x' is marked as
+crashed and should be repaired*, and because the dumps run under `set -e`
+after the account tarball has already been uploaded, the script died before
+writing the manifest — so an account whose backup was sitting in S3 showed as
+never backed up. A failed dump is now reported rather than fatal: the
+account keeps its backup, the databases that did dump are in it, and the ones
+that did not are named in the manifest with the reason. The dashboard shows
+that account as **partial**, not as a success and not as a failure, because
+it is neither — and retrying it would not fix a crashed table. Set
+`MYSQL_AUTO_REPAIR=1` (or pick it in Settings) to have the run repair such a
+table and try once more.
+
+**No room to stage the account.** The tarball is built on disk before it is
+uploaded, and `/root` on a cPanel server is usually on a small filesystem.
+With `BACKUP_WORK_DIR_FALLBACK=1` (the default) the run stages on whichever
+local filesystem has room, respecting the disk safety margin wherever it
+lands, and says in the log where it went. With it off, the account fails —
+but the message now lists every filesystem it checked and how much each had
+free.
+
 ### Which accounts failed, and why
 
 A name on a failed list is not something anyone can act on. `no space left

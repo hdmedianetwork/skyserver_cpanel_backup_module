@@ -121,7 +121,8 @@ function write_conf(array $updates): void {
 function public_conf(array $conf): array {
     $keys = ['S3_BUCKET', 'AWS_DEFAULT_REGION', 'S3_ENDPOINT_URL', 'S3_ADDRESSING_STYLE',
              'RETENTION_DAYS', 'ALERT_EMAIL', 'BACKUP_WORK_DIR', 'DISK_SAFETY_MARGIN_MB',
-             'ACCOUNT_TIMEOUT_MIN', 'ENABLE_USER_RESTORE'];
+             'ACCOUNT_TIMEOUT_MIN', 'BACKUP_WORK_DIR_FALLBACK', 'MYSQL_AUTO_REPAIR',
+             'ENABLE_USER_RESTORE'];
     $out = [];
     foreach ($keys as $k) {
         $out[$k] = (string) ($conf[$k] ?? '');
@@ -199,9 +200,13 @@ function run_state(): ?array {
     $reasons = [];
     foreach (($data['failed'] ?? []) as $f) {
         if (is_array($f) && isset($f['user'])) {
-            $reasons[$f['user']] = (string) ($f['reason'] ?? '');
+            $reasons[$f['user']] = [
+                'reason'   => (string) ($f['reason'] ?? ''),
+                'severity' => ($f['severity'] ?? 'failed') === 'partial' ? 'partial' : 'failed',
+            ];
         } elseif (is_string($f)) {
-            $reasons[$f] = '';   // written by a version before reasons were kept
+            // Written by a version before reasons were kept.
+            $reasons[$f] = ['reason' => '', 'severity' => 'failed'];
         }
     }
     return [
@@ -284,9 +289,12 @@ function account_rows(): array {
         if (is_array($raw) && ($raw['date'] ?? '') === date('Y-m-d')) {
             foreach (($raw['failed'] ?? []) as $f) {
                 if (is_array($f) && isset($f['user'])) {
-                    $reasons[$f['user']] = (string) ($f['reason'] ?? '');
+                    $reasons[$f['user']] = [
+                        'reason'   => (string) ($f['reason'] ?? ''),
+                        'severity' => ($f['severity'] ?? 'failed') === 'partial' ? 'partial' : 'failed',
+                    ];
                 } elseif (is_string($f)) {
-                    $reasons[$f] = '';
+                    $reasons[$f] = ['reason' => '', 'severity' => 'failed'];
                 }
             }
         }
@@ -301,12 +309,26 @@ function account_rows(): array {
         // A failure only still counts if the account has no backup from
         // today. Retrying it by hand updates the manifest, so the row clears
         // itself rather than needing the run's bookkeeping to be corrected.
-        $failed = array_key_exists($user, $reasons)
-                  && ($latest['date'] ?? null) !== $today;
+        $note    = $reasons[$user] ?? null;
+        $backedUpToday = ($latest['date'] ?? null) === $today;
+
+        // "Backed up, but a database is missing from it" is neither a
+        // success nor a failure, and calling it either one misleads: the
+        // first hides a hole in the backup, the second sends someone
+        // re-running an account that a retry cannot fix.
+        $partial = $backedUpToday && !empty($latest['failed_databases']);
+        $failed  = $note !== null && !$backedUpToday;
+
+        if ($partial && $note === null) {
+            $names = array_map(fn($d) => $d['name'] ?? '?', $latest['failed_databases']);
+            $note = ['reason' => count($names) . ' database(s) not backed up: '
+                                 . implode(', ', $names), 'severity' => 'partial'];
+        }
 
         $rows[] = [
-            'failed' => $failed,
-            'reason' => $failed ? $reasons[$user] : null,
+            'failed'  => $failed,
+            'partial' => $partial,
+            'reason'  => ($failed || $partial) && $note ? $note['reason'] : null,
             'user' => $user,
             'last_date' => $latest['date'] ?? null,
             'last_size' => $latest['full_size'] ?? null,
@@ -527,6 +549,8 @@ if ($isApi) {
                 'BACKUP_WORK_DIR' => $_POST['work_dir'] ?? null,
                 'DISK_SAFETY_MARGIN_MB' => $_POST['disk_margin'] ?? null,
                 'ACCOUNT_TIMEOUT_MIN' => $_POST['account_timeout'] ?? null,
+                'BACKUP_WORK_DIR_FALLBACK' => (($_POST['work_dir_fallback'] ?? '0') === '1') ? '1' : '0',
+                'MYSQL_AUTO_REPAIR' => (($_POST['mysql_auto_repair'] ?? '0') === '1') ? '1' : '0',
                 'ENABLE_USER_RESTORE' => (($_POST['user_restore'] ?? '0') === '1') ? '1' : '0',
                 'ALERT_EMAIL' => $_POST['alert_email'] ?? null,
                 'S3_ENDPOINT_URL' => normalize_endpoint($_POST['s3_endpoint'] ?? ''),
@@ -859,10 +883,10 @@ ob_start();
   }
 
   function renderAccounts() {
-    var failedCount = STATE.accounts.filter(function (r) { return r.failed; }).length;
+    var failedCount = STATE.accounts.filter(function (r) { return r.failed || r.partial; }).length;
 
     var rows = STATE.accounts.filter(function (r) {
-      if (failedOnly && !r.failed) return false;
+      if (failedOnly && !r.failed && !r.partial) return false;
       return !accountFilter || r.user.toLowerCase().indexOf(accountFilter) !== -1;
     });
 
@@ -879,8 +903,8 @@ ob_start();
 
         // The reason is the point of the column: a name on a failed list is
         // not something anyone can act on, "no space on /root" is.
-        var result = r.failed
-          ? '<span class="pill pill-bad">failed</span>' +
+        var result = (r.failed || r.partial)
+          ? '<span class="pill ' + (r.partial ? 'pill-warn">partial' : 'pill-bad">failed') + '</span>' +
             (r.reason ? '<div class="dim" style="font-size:12px; white-space:normal; ' +
                         'max-width:420px; margin-top:4px">' + esc(r.reason) + '</div>' : '')
           : '<span class="dim">—</span>';
@@ -904,7 +928,7 @@ ob_start();
         '</tr>';
       }).join('') + '</tbody></table></div>'
       : emptyState('users',
-          failedOnly ? 'No account failed its last backup' :
+          failedOnly ? 'No account had a problem with its last backup' :
             (accountFilter ? 'No account matches "' + accountFilter + '"' : 'No cPanel accounts found'),
           failedOnly ? 'Everything that ran has a backup.' :
             (accountFilter ? 'Clear the search to see them all.'
@@ -917,8 +941,8 @@ ob_start();
           (failedCount
             ? '<button class="btn btn-sm" id="sky-failed-only" ' +
               (failedOnly ? 'style="background:var(--bad);border-color:var(--bad);color:#fff"' : '') + '>' +
-              (failedOnly ? 'Showing failed only (' + failedCount + ') — show all'
-                          : 'Show only failed (' + failedCount + ')') + '</button>'
+              (failedOnly ? 'Showing problems only (' + failedCount + ') — show all'
+                          : 'Show only problems (' + failedCount + ')') + '</button>'
             : '') +
           '<div class="field search" style="margin:0">' + svg('search') +
             '<input type="search" id="sky-acct-search" placeholder="Filter accounts…" value="' + esc(accountFilter) + '">' +
@@ -1009,6 +1033,16 @@ ob_start();
             'An account is skipped rather than filling the disk and taking every site down with it.') +
           f('Per-account time limit (minutes)', 'account_timeout', c.ACCOUNT_TIMEOUT_MIN || '90', 'number', '90',
             'The run gives up on an account that takes longer and moves to the next one, so one stuck account cannot stall the whole night.') +
+          '<div class="field"><label for="f-work_dir_fallback">When the staging directory is too small</label>' +
+            '<select id="f-work_dir_fallback" name="work_dir_fallback">' +
+              '<option value="1"' + (c.BACKUP_WORK_DIR_FALLBACK !== '0' ? ' selected' : '') + '>Stage on whichever filesystem has room</option>' +
+              '<option value="0"' + (c.BACKUP_WORK_DIR_FALLBACK === '0' ? ' selected' : '') + '>Fail the account</option>' +
+            '</select><div class="help">A large account cannot be packaged in a small /root. The disk safety margin is respected wherever it lands.</div></div>' +
+          '<div class="field"><label for="f-mysql_auto_repair">A database with a crashed table</label>' +
+            '<select id="f-mysql_auto_repair" name="mysql_auto_repair">' +
+              '<option value="0"' + (c.MYSQL_AUTO_REPAIR !== '1' ? ' selected' : '') + '>Report it and back up the rest</option>' +
+              '<option value="1"' + (c.MYSQL_AUTO_REPAIR === '1' ? ' selected' : '') + '>Run mysqlcheck --auto-repair, then try again</option>' +
+            '</select><div class="help">Repairing writes to a customer\'s data, so it is off by default. Either way the account itself is still backed up.</div></div>' +
         '</div></div>' +
       '</div>' +
 

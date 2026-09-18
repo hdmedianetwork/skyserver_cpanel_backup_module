@@ -63,13 +63,15 @@ json_array() { # items...
 # administrator can act on — "which one, and why" is, and it is what decides
 # whether to retry the account or go and fix something first.
 FAILED_REASONS=()
+FAILED_SEVERITY=()
 failed_json() {
   if [ "${#FAILED_USERS[@]}" -eq 0 ]; then echo '[]'; return; fi
   local i out='[]'
   for i in "${!FAILED_USERS[@]}"; do
     out="$(jq -c --argjson a "$out" --arg u "${FAILED_USERS[$i]}" \
              --arg r "${FAILED_REASONS[$i]:-}" \
-             -n '$a + [{user:$u, reason:$r}]' 2>/dev/null || echo "$out")"
+             --arg s "${FAILED_SEVERITY[$i]:-failed}" \
+             -n '$a + [{user:$u, reason:$r, severity:$s}]' 2>/dev/null || echo "$out")"
   done
   echo "$out"
 }
@@ -196,15 +198,28 @@ for USER in $ACCOUNTS; do
   # read back out of this account's own output rather than guessed at from a
   # log that every other account is writing to too.
   ACCT_OUT="$(mktemp)"
-  if timeout --foreground --kill-after=60s "${ACCOUNT_TIMEOUT_MIN}m" \
-       "$SCRIPT_DIR/backup-user.sh" "$USER" > "$ACCT_OUT" 2>&1 200>&-; then
-    cat "$ACCT_OUT" >> "$LOG"
+  RC=0
+  timeout --foreground --kill-after=60s "${ACCOUNT_TIMEOUT_MIN}m" \
+    "$SCRIPT_DIR/backup-user.sh" "$USER" > "$ACCT_OUT" 2>&1 200>&- || RC=$?
+  cat "$ACCT_OUT" >> "$LOG"
+
+  if [ "$RC" -eq 0 ]; then
     echo "[OK] $USER (took $(( (SECONDS - STARTED) / 60 ))m)" >> "$LOG"
     DONE_USERS+=("$USER")
+
+  elif [ "$RC" -eq 2 ]; then
+    # The account is backed up; something inside it is not. Counted as done
+    # — re-running it would not fix a crashed table — but reported, because
+    # a backup missing a database is not one to find out about in a crisis.
+    REASON="$(sky_failure_reason "$ACCT_OUT")"
+    echo "[WARN] $USER backed up with problems (took $(( (SECONDS - STARTED) / 60 ))m): $REASON" >> "$LOG"
+    DONE_USERS+=("$USER")
+    FAILED_USERS+=("$USER")
+    FAILED_REASONS+=("$REASON")
+    FAILED_SEVERITY+=("partial")
+
   else
-    RC=$?
-    cat "$ACCT_OUT" >> "$LOG"
-    if [ "$RC" = "124" ] || [ "$RC" = "137" ]; then
+    if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
       REASON="gave up after ${ACCOUNT_TIMEOUT_MIN} minutes — the account may need a longer limit"
       echo "[FAIL] $USER — $REASON" >> "$LOG"
       TIMED_OUT+=("$USER")
@@ -214,6 +229,7 @@ for USER in $ACCOUNTS; do
     fi
     FAILED_USERS+=("$USER")
     FAILED_REASONS+=("$REASON")
+    FAILED_SEVERITY+=("failed")
   fi
   rm -f "$ACCT_OUT"
   CURRENT_USER=""

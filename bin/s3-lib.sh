@@ -59,6 +59,15 @@ source "$SKYSERVER_CONF"
 # nightly run — and because the run holds a lock, every following night is
 # skipped too.
 : "${ACCOUNT_TIMEOUT_MIN:=90}"
+# Stage somewhere else when the configured directory cannot hold an account.
+# A 40GB account cannot be packaged in /root on a server whose root
+# filesystem is 50GB, and failing it outright while /home has 800GB free
+# helps nobody. Set to 0 to stage only where BACKUP_WORK_DIR says.
+: "${BACKUP_WORK_DIR_FALLBACK:=1}"
+# Run mysqlcheck --auto-repair on a database whose dump failed because a
+# table is marked as crashed, then try once more. Off by default: repairing
+# is a write to a customer's data, and that is the administrator's call.
+: "${MYSQL_AUTO_REPAIR:=0}"
 : "${ENABLE_USER_RESTORE:=0}"
 : "${ALERT_EMAIL:=}"
 # Where mysqldump/mysql find root's MySQL credentials. Nothing here may
@@ -124,6 +133,45 @@ sky_failure_reason() { # <logfile>
   # error), no control characters, and short enough to sit in a table cell
   # without pushing everything else off the screen.
   printf '%s' "$line" | sed -e 's/^\[[!*]\] *//' | tr -d '\r' | tr '\t' ' ' | cut -c1-180
+}
+
+# Somewhere with room for <needed_kb>, preferring the configured directory.
+# Prints the chosen path, or nothing when no filesystem has room.
+sky_pick_work_dir() { # <needed_kb>
+  local needed="$1" cand avail
+
+  for cand in "$BACKUP_WORK_DIR" $(sky_work_dir_candidates); do
+    [ -d "$cand" ] || continue
+    [ -w "$cand" ] || continue
+    avail="$(df -Pk "$cand" 2>/dev/null | awk 'NR==2 {print $4}')"
+    if [ -n "$avail" ] && [ "$avail" -ge "$needed" ]; then
+      printf '%s' "$cand"
+      return 0
+    fi
+    [ "$BACKUP_WORK_DIR_FALLBACK" = "1" ] || return 1
+  done
+  return 1
+}
+
+# Mount points of local, writable filesystems, most free space first.
+sky_work_dir_candidates() {
+  [ "$BACKUP_WORK_DIR_FALLBACK" = "1" ] || return 0
+  df -PkT 2>/dev/null | awk '
+    NR > 1 && $2 !~ /^(tmpfs|devtmpfs|squashfs|overlay|iso9660|nfs|nfs4|cifs|fuse.*)$/ {
+      print $5, $7
+    }' | sort -rn | awk '{print $2}'
+}
+
+# What each candidate actually had, for an error message that says where to
+# look rather than only that it gave up.
+sky_work_dir_report() {
+  local cand avail
+  for cand in "$BACKUP_WORK_DIR" $(sky_work_dir_candidates); do
+    [ -d "$cand" ] || continue
+    avail="$(df -Pk "$cand" 2>/dev/null | awk 'NR==2 {print $4}')"
+    [ -n "$avail" ] || continue
+    echo "      $cand — $(( avail / 1024 ))MB free"
+  done | sort -u
 }
 
 USER_RESTORE_MARKER="/var/spool/skyserver-backup/user-restore-enabled"

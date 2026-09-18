@@ -47,17 +47,24 @@ if [ -z "$HOME_DIR" ] || [ ! -d "$HOME_DIR" ]; then
 fi
 ACCT_KB="$(du -sk "$HOME_DIR" 2>/dev/null | awk '{print $1}')"
 [ -n "$ACCT_KB" ] || ACCT_KB=0
-AVAIL_KB="$(df -Pk "$BACKUP_WORK_DIR" | awk 'NR==2 {print $4}')"
 NEEDED_KB=$(( ACCT_KB + DISK_SAFETY_MARGIN_MB * 1024 ))
 
-if [ "$AVAIL_KB" -lt "$NEEDED_KB" ]; then
-  echo "[!] Not enough space in $BACKUP_WORK_DIR for $USER:" \
-       "need $(( NEEDED_KB / 1024 ))MB (account $(( ACCT_KB / 1024 ))MB + margin)," \
-       "have $(( AVAIL_KB / 1024 ))MB free" >&2
+STAGE_DIR="$(sky_pick_work_dir "$NEEDED_KB" || true)"
+if [ -z "$STAGE_DIR" ]; then
+  echo "[!] Not enough space to package $USER: need $(( NEEDED_KB / 1024 ))MB" \
+       "(account $(( ACCT_KB / 1024 ))MB + $(( DISK_SAFETY_MARGIN_MB ))MB margin)." >&2
+  echo "[!] Checked:" >&2
+  sky_work_dir_report >&2
+  echo "[!] Point BACKUP_WORK_DIR in $SKYSERVER_CONF at a filesystem with room," >&2
+  echo "[!] or lower DISK_SAFETY_MARGIN_MB if the margin is what is out of reach." >&2
   exit 1
 fi
+if [ "$STAGE_DIR" != "$BACKUP_WORK_DIR" ]; then
+  echo "[*] $BACKUP_WORK_DIR cannot hold $USER ($(( NEEDED_KB / 1024 ))MB needed) —" \
+       "staging in $STAGE_DIR instead."
+fi
 
-WORKDIR="$(mktemp -d "$BACKUP_WORK_DIR/skybackup-${USER}-XXXXXX")"
+WORKDIR="$(mktemp -d "$STAGE_DIR/skybackup-${USER}-XXXXXX")"
 # The progress file goes with the work directory: whether this run succeeds,
 # fails or is killed, the account's page must not be left showing a backup
 # that is no longer happening.
@@ -198,8 +205,23 @@ while IFS= read -r DB; do
   if [ -n "$DB" ]; then ALL_DBS+=("$DB"); fi
 done < <(list_databases "$USER" | sort -u)
 
+# One dump, reported rather than fatal. mysqldump's own exit status is what
+# matters, not the pipeline's — gzip succeeds happily on a truncated stream.
+dump_database() { # <db> <dest.gz> <errfile>
+  local rc
+  set +e
+  mysql_cmd mysqldump --single-transaction --quick "$1" 2>"$3" | gzip > "$2"
+  rc=${PIPESTATUS[0]}
+  set -e
+  [ "$rc" -eq 0 ] || return 1
+  gzip -t "$2" 2>/dev/null || return 1
+  return 0
+}
+
 DB_TOTAL="${#ALL_DBS[@]}"
 DB_LIST=()
+DB_FAILED=()
+DB_REASONS=()
 DB_N=0
 for DB in ${ALL_DBS[@]+"${ALL_DBS[@]}"}; do
   DB_N=$(( DB_N + 1 ))
@@ -207,24 +229,62 @@ for DB in ${ALL_DBS[@]+"${ALL_DBS[@]}"}; do
     "$(( (DB_N - 1) * 100 / DB_TOTAL ))" "$DB ($DB_N of $DB_TOTAL)"
 
   DUMP="$WORKDIR/${DB}.sql.gz"
-  mysql_cmd mysqldump --single-transaction --quick "$DB" | gzip > "$DUMP"
-  if ! gzip -t "$DUMP" 2>/dev/null; then
-    echo "[!] Dump of database $DB failed its integrity check — not uploading" >&2
-    exit 1
+  DB_ERR="$WORKDIR/${DB}.err"
+
+  if ! dump_database "$DB" "$DUMP" "$DB_ERR"; then
+    # "Table is marked as crashed" is a MyISAM table wanting REPAIR, and it
+    # is the one dump failure with a standard remedy. Applying it writes to
+    # a customer's data, so it is the administrator's decision — but when
+    # they have made it, one crashed table should not cost a database.
+    if [ "$MYSQL_AUTO_REPAIR" = "1" ] && grep -qai 'marked as crashed' "$DB_ERR"; then
+      echo "[*] $DB has a crashed table — repairing and trying again."
+      mysql_cmd mysqlcheck --auto-repair --quick "$DB" >>"$DB_ERR" 2>&1 || true
+      dump_database "$DB" "$DUMP" "$DB_ERR" || true
+    fi
   fi
-  DB_LIST+=("$DB")
-  s3_upload "$DUMP" "backups/${USER}/${DATE}/databases/${DB}.sql.gz"
+
+  if [ -s "$DUMP" ] && gzip -t "$DUMP" 2>/dev/null && [ ! -s "$DB_ERR" ]; then
+    DB_LIST+=("$DB")
+    s3_upload "$DUMP" "backups/${USER}/${DATE}/databases/${DB}.sql.gz"
+  else
+    # The rest of the account is still worth keeping. Losing an entire
+    # account's backup over one broken table is the worst possible trade,
+    # and it is what used to happen: set -e killed the script here, before
+    # the manifest recording the tarball already in S3 was ever written.
+    REASON="$(sky_failure_reason "$DB_ERR")"
+    if grep -qai 'marked as crashed' "$DB_ERR"; then
+      REASON="$REASON — run: mysqlcheck --auto-repair $DB"
+    fi
+    DB_FAILED+=("$DB")
+    DB_REASONS+=("$REASON")
+    echo "[!] Database $DB could not be backed up: $REASON" >&2
+    rm -f "$DUMP"
+  fi
 done
 
-if [ "${#DB_LIST[@]}" -eq 0 ]; then
+if [ "${#DB_LIST[@]}" -eq 0 ] && [ "${#DB_FAILED[@]}" -eq 0 ]; then
   echo "[*] No databases found for $USER — the account tarball is still a full backup."
 fi
 
 # 3. Update the per-user manifest that the cPanel plugin reads.
 MANIFEST_FILE="$MANIFEST_DIR/${USER}.json"
 DB_JSON="$(printf '%s\n' "${DB_LIST[@]:-}" | jq -R 'select(length > 0)' | jq -s .)"
-ENTRY="$(jq -n --arg date "$DATE" --arg size "$FULL_SIZE" --argjson bytes "$FULL_BYTES" --argjson dbs "$DB_JSON" \
-  '{date: $date, full_size: $size, full_size_bytes: $bytes, databases: $dbs}')"
+
+# Databases that could not be dumped are named in the manifest, so neither
+# the customer's page nor the dashboard shows a backup as complete when a
+# piece of it is missing.
+FAILED_JSON='[]'
+if [ "${#DB_FAILED[@]}" -gt 0 ]; then
+  for _i in "${!DB_FAILED[@]}"; do
+    FAILED_JSON="$(jq -c --argjson a "$FAILED_JSON" --arg n "${DB_FAILED[$_i]}" \
+                     --arg r "${DB_REASONS[$_i]:-}" -n '$a + [{name:$n, reason:$r}]')"
+  done
+fi
+
+ENTRY="$(jq -n --arg date "$DATE" --arg size "$FULL_SIZE" --argjson bytes "$FULL_BYTES" \
+  --argjson dbs "$DB_JSON" --argjson failed "$FAILED_JSON" \
+  '{date: $date, full_size: $size, full_size_bytes: $bytes, databases: $dbs}
+   + (if ($failed | length) > 0 then {failed_databases: $failed} else {} end)')"
 
 if [ -f "$MANIFEST_FILE" ]; then
   jq --argjson entry "$ENTRY" \
@@ -236,5 +296,14 @@ fi
 # Hand the manifest to the account it describes, so its Backup Manager
 # page can actually list what was just uploaded.
 "$SCRIPT_DIR/publish-manifest.sh" "$USER"
+
+if [ "${#DB_FAILED[@]}" -gt 0 ]; then
+  echo "[*] Done: $USER ($FULL_SIZE, ${#DB_LIST[@]} databases) —" \
+       "${#DB_FAILED[@]} database(s) could not be backed up: ${DB_FAILED[*]}"
+  echo "[!] ${#DB_FAILED[@]} of $DB_TOTAL databases failed: ${DB_REASONS[0]}" >&2
+  # 2 is "the account is backed up, but not everything in it" — the run
+  # records it as a partial rather than as a success or a total failure.
+  exit 2
+fi
 
 echo "[*] Done: $USER ($FULL_SIZE, ${#DB_LIST[@]} databases)"

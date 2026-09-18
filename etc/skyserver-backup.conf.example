@@ -35,6 +35,19 @@ DISK_SAFETY_MARGIN_MB=2048
 # is skipped too. Raise it if you host accounts that genuinely take longer.
 ACCOUNT_TIMEOUT_MIN=90
 
+# What to do when BACKUP_WORK_DIR cannot hold the account being packaged.
+# 1 stages on whichever local filesystem has room (the safety margin above is
+# respected wherever it lands); 0 fails the account. A 40GB account cannot be
+# packaged in /root on a server whose root filesystem is 50GB.
+BACKUP_WORK_DIR_FALLBACK=1
+
+# What to do about a database whose dump fails because a table is marked as
+# crashed. 1 runs `mysqlcheck --auto-repair` on it and tries once more; 0
+# reports it and moves on. Off by default because repairing writes to a
+# customer's data. Either way the account itself is still backed up and the
+# database is named in the dashboard.
+MYSQL_AUTO_REPAIR=0
+
 # Set to 1 to let cPanel users restore their own backups from their
 # dashboard. Leave it 0 until you have verified a restore yourself on a
 # throwaway account: a restore overwrites the account's live data and

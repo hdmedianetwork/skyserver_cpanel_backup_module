@@ -134,49 +134,42 @@ while IFS= read -r _acct; do
   if [ -n "$_acct" ]; then ALL_ACCOUNTS+=("$_acct"); fi
 done <<< "$ACCOUNTS"
 
-# Resuming keeps the earlier run's completed accounts — they are already in
-# S3 under today's date and re-uploading them would be hours of work for
-# nothing. Accounts that failed are retried: a run is usually resumed
-# precisely because something went wrong.
-if [ "$RESUME" = "1" ] && [ -f "$STATE_FILE" ]; then
-  PREV_DATE="$(jq -r '.date // ""' "$STATE_FILE" 2>/dev/null || true)"
-  PREV_STATUS="$(jq -r '.status // ""' "$STATE_FILE" 2>/dev/null || true)"
+# Does this account already have a backup stored under today's date?
+#
+# This, and not the run's own bookkeeping, is what decides whether resuming
+# should skip an account. The manifest is written only after the upload
+# succeeded, so it is the one record that cannot be optimistic — and it is
+# still there after a crash that took run-state.json with it, after an
+# upgrade from a version that never wrote one, and after an account was
+# backed up by hand from the dashboard in between.
+has_today_backup() { # <user>
+  local f="/var/spool/skyserver-backup/manifests/${1}.json"
+  [ -r "$f" ] || return 1
+  jq -e --arg d "$DATE" 'map(select(.date == $d)) | length > 0' "$f" >/dev/null 2>&1
+}
 
-  if [ "$PREV_DATE" = "$DATE" ] && [ "$PREV_STATUS" != "finished" ]; then
-    while IFS= read -r _acct; do
-      if [ -n "$_acct" ]; then DONE_USERS+=("$_acct"); fi
-    done < <(jq -r '.done[]? // empty' "$STATE_FILE" 2>/dev/null || true)
-
-    REMAINING=()
-    for _acct in ${ALL_ACCOUNTS[@]+"${ALL_ACCOUNTS[@]}"}; do
-      _skip=0
-      for _d in ${DONE_USERS[@]+"${DONE_USERS[@]}"}; do
-        if [ "$_acct" = "$_d" ]; then _skip=1; break; fi
-      done
-      if [ "$_skip" = "0" ]; then REMAINING+=("$_acct"); fi
-    done
-
-    ACCOUNTS="$(printf '%s\n' ${REMAINING[@]+"${REMAINING[@]}"})"
-    echo "[*] Resuming: ${#DONE_USERS[@]} of ${#ALL_ACCOUNTS[@]} accounts were already done today;" \
-         "${#REMAINING[@]} left." >> "$LOG"
-
-    if [ "${#REMAINING[@]}" -eq 0 ]; then
-      RUN_ENDED=1
-      write_run_state finished
-      echo "[*] Nothing left to do — every account already has today's backup." >> "$LOG"
-      echo "===== Backup run finished: $(date) =====" >> "$LOG"
-      exit 0
+if [ "$RESUME" = "1" ]; then
+  REMAINING=()
+  for _acct in ${ALL_ACCOUNTS[@]+"${ALL_ACCOUNTS[@]}"}; do
+    if has_today_backup "$_acct"; then
+      DONE_USERS+=("$_acct")
+    else
+      REMAINING+=("$_acct")
     fi
-  elif [ "$PREV_DATE" = "$DATE" ] && [ "$PREV_STATUS" = "finished" ]; then
-    # Asking to resume something that already finished should not quietly
-    # turn into hours of re-uploading everything.
+  done
+
+  echo "[*] Resuming: ${#DONE_USERS[@]} of ${#ALL_ACCOUNTS[@]} accounts already have today's" \
+       "backup; ${#REMAINING[@]} left." >> "$LOG"
+
+  if [ "${#REMAINING[@]}" -eq 0 ]; then
     RUN_ENDED=1
-    echo "[*] Today's run already finished — nothing to resume." >> "$LOG"
+    write_run_state finished
+    echo "[*] Nothing left to do — every account already has today's backup." >> "$LOG"
     echo "===== Backup run finished: $(date) =====" >> "$LOG"
     exit 0
-  else
-    echo "[*] No interrupted run from today to resume — starting a full run." >> "$LOG"
   fi
+
+  ACCOUNTS="$(printf '%s\n' ${REMAINING[@]+"${REMAINING[@]}"})"
 fi
 
 write_run_state running

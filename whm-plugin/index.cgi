@@ -180,12 +180,17 @@ function latest_run_summary(): array {
  * is the whole point: it is what "Resume" resumes from.
  */
 function run_state(): ?array {
-    if (!is_readable(RUN_STATE_FILE)) {
-        return null;
-    }
-    $data = json_decode((string) @file_get_contents(RUN_STATE_FILE), true);
-    if (!is_array($data) || empty($data['accounts'])) {
-        return null;
+    $data = is_readable(RUN_STATE_FILE)
+        ? json_decode((string) @file_get_contents(RUN_STATE_FILE), true)
+        : null;
+
+    // No usable state file is not the same as nothing to resume. It is what
+    // an upgrade looks like — the file has only been written since 0.9.0 —
+    // and what a crash bad enough to lose it looks like. The manifests
+    // survive both, so fall back to them.
+    if (!is_array($data) || empty($data['accounts'])
+        || ($data['date'] ?? '') !== date('Y-m-d')) {
+        return derived_run_state();
     }
     $total = count($data['accounts']);
     $done  = count($data['done'] ?? []);
@@ -217,6 +222,52 @@ function run_state(): ?array {
     ];
 }
 
+/**
+ * What a half-finished day looks like from the outside: some accounts have a
+ * backup stored under today's date and some do not, with nothing running.
+ *
+ * Deliberately says nothing when *no* account has today's backup — that is a
+ * day that has not started, and calling it "resume" would be offering to do
+ * the ordinary nightly run under a name that promises something else.
+ */
+function derived_run_state(): ?array {
+    $today = date('Y-m-d');
+    $accounts = whm_accounts();
+    if (!$accounts) {
+        return null;
+    }
+
+    $done = 0;
+    foreach ($accounts as $user) {
+        foreach (account_backups($user) as $b) {
+            if (($b['date'] ?? '') === $today) {
+                $done++;
+                break;
+            }
+        }
+    }
+
+    $total = count($accounts);
+    if ($done === 0 || $done >= $total) {
+        return null;
+    }
+
+    return [
+        'date'       => $today,
+        'status'     => 'interrupted',
+        'current'    => '',
+        'started_at' => null,
+        'updated_at' => null,
+        'total'      => $total,
+        'done'       => $done,
+        'failed'     => 0,
+        'reasons'    => [],
+        'remaining'  => $total - $done,
+        'resumable'  => true,
+        'derived'    => true,
+    ];
+}
+
 function account_backups(string $user): array {
     $user = preg_replace('/[^a-zA-Z0-9_]/', '', $user);
     $f = MANIFEST_DIR . "/$user.json";
@@ -224,8 +275,22 @@ function account_backups(string $user): array {
 }
 
 function account_rows(): array {
-    $run     = run_state();
-    $reasons = $run['reasons'] ?? [];
+    // run_state() may derive itself from the manifests, which reads the same
+    // rows; only the reasons are wanted here, and only a real state file has
+    // any, so read that directly rather than going back through it.
+    $reasons = [];
+    if (is_readable(RUN_STATE_FILE)) {
+        $raw = json_decode((string) @file_get_contents(RUN_STATE_FILE), true);
+        if (is_array($raw) && ($raw['date'] ?? '') === date('Y-m-d')) {
+            foreach (($raw['failed'] ?? []) as $f) {
+                if (is_array($f) && isset($f['user'])) {
+                    $reasons[$f['user']] = (string) ($f['reason'] ?? '');
+                } elseif (is_string($f)) {
+                    $reasons[$f] = '';
+                }
+            }
+        }
+    }
     $today   = date('Y-m-d');
 
     $rows = [];
@@ -664,7 +729,9 @@ ob_start();
              '</div></div>';
     } else if (r && r.resumable) {
       out += '<div class="note note-warn" style="margin-bottom:14px">' + svg('alert') +
-             '<div style="flex:1 1 auto"><b>The last run did not finish.</b> ' +
+             '<div style="flex:1 1 auto"><b>' +
+             (r.derived ? 'Not every account has today\'s backup.'
+                        : 'The last run did not finish.') + '</b> ' +
              r.done + ' of ' + r.total + ' accounts were backed up' +
              (r.current ? ', and it stopped on <b>' + esc(r.current) + '</b>' : '') + '. ' +
              'Resuming carries on with the remaining <b>' + r.remaining + '</b> — the ones ' +

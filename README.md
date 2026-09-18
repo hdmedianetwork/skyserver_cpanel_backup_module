@@ -212,17 +212,28 @@ A run over a couple of hundred accounts takes hours, and a server that goes
 down in the middle of one should not mean starting again from the first
 account — the work already in S3 is still good.
 
-`bin/backup-all.sh` rewrites `/var/spool/skyserver-backup/run-state.json`
-after every account, recording the full account list and which of them are
-done. `backup-all.sh --resume` reads it and carries on with the rest;
-accounts that failed are retried, accounts that succeeded are left alone. It
-only resumes a run from today, and resuming one that already finished does
-nothing rather than quietly re-uploading everything.
+`backup-all.sh --resume` backs up every account that does not already have a
+backup stored under today's date, and skips the ones that do.
 
-The dashboard surfaces it: when the last run was cut short, the Overview
-tab says how far it got and offers **Resume (N left)** beside **Run full
-backup**. While a run is going the same state drives a live *90 of 187, now
-on sharmaho* progress bar.
+That test is the manifest, not the run's own bookkeeping, and deliberately
+so: a manifest is written only after the upload succeeded, so it is the one
+record that cannot be optimistic. It is still there after a crash that took
+the state file with it, after an upgrade from a version that never wrote
+one, and after an account was backed up by hand from the dashboard in
+between. Accounts that failed have no manifest entry for today, so they are
+retried; resuming a day that is already complete does nothing rather than
+re-uploading everything.
+
+`/var/spool/skyserver-backup/run-state.json`, rewritten after every account,
+is what gives the dashboard the detail — which account it stopped on, which
+ones failed and why. When there is no usable state file the dashboard works
+the same question out from the manifests, so **Resume (N left)** appears
+whenever some accounts have today's backup and some do not. It stays hidden
+when *none* do: that is a day that has not started, and the ordinary **Run
+full backup** is the honest name for it.
+
+While a run is going the same state drives a live *90 of 187, now on
+sharmaho* progress bar.
 
 ### Which accounts failed, and why
 

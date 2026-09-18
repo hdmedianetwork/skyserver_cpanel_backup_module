@@ -54,6 +54,11 @@ source "$SKYSERVER_CONF"
 # Defaults keep configs written before these options existed working.
 : "${BACKUP_WORK_DIR:=/root}"
 : "${DISK_SAFETY_MARGIN_MB:=2048}"
+# How long one account may take before the run gives up on it and moves to
+# the next. Without a limit, a single account that hangs stalls the whole
+# nightly run — and because the run holds a lock, every following night is
+# skipped too.
+: "${ACCOUNT_TIMEOUT_MIN:=90}"
 : "${ENABLE_USER_RESTORE:=0}"
 : "${ALERT_EMAIL:=}"
 # Where mysqldump/mysql find root's MySQL credentials. Nothing here may

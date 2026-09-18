@@ -23,6 +23,16 @@ alert() { # <subject> <body>
   fi
 }
 
+# A run that is killed — the OOM killer, a reboot, a hand on the keyboard —
+# left the log showing "started" and nothing else, which reads exactly like
+# a run still in progress. It is not, and the difference matters: this is
+# what a stalled nightly backup looked like for days.
+RUN_ENDED=0
+trap 'if [ "$RUN_ENDED" = "0" ]; then
+        echo "===== Backup run interrupted: $(date) =====" >> "$LOG"
+      fi' EXIT
+trap 'exit 143' INT TERM
+
 echo "===== Backup run started: $(date) =====" >> "$LOG"
 
 # Give up loudly. Every abort below writes the reason and a matching
@@ -32,6 +42,7 @@ echo "===== Backup run started: $(date) =====" >> "$LOG"
 abort() { # <short reason> <detail>
   echo "[!] $1" >> "$LOG"
   if [ -n "${2:-}" ]; then echo "$2" >> "$LOG"; fi
+  RUN_ENDED=1
   echo "===== Backup run aborted: $(date) =====" >> "$LOG"
   alert "[SkyServer Backup] FAILED on $(hostname): $1" \
 "$(printf 'The backup run on %s stopped before backing up anything.\n\n%s\n\n%s\n' \
@@ -58,24 +69,52 @@ if [ -z "$ACCOUNTS" ]; then
 fi
 
 FAILED_USERS=()
+TIMED_OUT=()
+TOTAL=$(echo "$ACCOUNTS" | wc -w)
+N=0
+
 for USER in $ACCOUNTS; do
-  if "$SCRIPT_DIR/backup-user.sh" "$USER" >> "$LOG" 2>&1; then
-    echo "[OK] $USER" >> "$LOG"
+  N=$(( N + 1 ))
+  STARTED=$SECONDS
+  echo "[*] $(date '+%F %T') [$N/$TOTAL] starting $USER" >> "$LOG"
+
+  # --foreground so the limit applies to the account being packaged rather
+  # than to a process group cron already owns; backup-user.sh cleans up its
+  # own pkgacct when it is told to stop.
+  # 200>&- closes the lock file descriptor for the child. Bash hands every
+  # open fd to everything it starts, so pkgacct — and anything it leaves
+  # behind — inherited the run's lock. One orphaned child was then enough to
+  # make every later run exit with "another backup run is already in
+  # progress", for good.
+  if timeout --foreground --kill-after=60s "${ACCOUNT_TIMEOUT_MIN}m" \
+       "$SCRIPT_DIR/backup-user.sh" "$USER" >> "$LOG" 2>&1 200>&-; then
+    echo "[OK] $USER (took $(( (SECONDS - STARTED) / 60 ))m)" >> "$LOG"
   else
-    echo "[FAIL] $USER" >> "$LOG"
+    RC=$?
+    if [ "$RC" = "124" ] || [ "$RC" = "137" ]; then
+      echo "[FAIL] $USER — gave up after ${ACCOUNT_TIMEOUT_MIN} minutes" >> "$LOG"
+      TIMED_OUT+=("$USER")
+    else
+      echo "[FAIL] $USER (after $(( (SECONDS - STARTED) / 60 ))m)" >> "$LOG"
+    fi
     FAILED_USERS+=("$USER")
   fi
 done
 
-"$SCRIPT_DIR/retention-cleanup.sh" >> "$LOG" 2>&1 || true
+"$SCRIPT_DIR/retention-cleanup.sh" >> "$LOG" 2>&1 200>&- || true
 
+RUN_ENDED=1
 echo "===== Backup run finished: $(date) =====" >> "$LOG"
 
 if [ "${#FAILED_USERS[@]}" -gt 0 ]; then
   alert "[SkyServer Backup] ${#FAILED_USERS[@]} account(s) failed on $(hostname)" \
-"$(printf 'Backup run on %s finished with failures.\n\nFailed accounts:\n%s\n\nLast 40 log lines:\n%s\n' \
+"$(printf 'Backup run on %s finished with failures.\n\nFailed accounts:\n%s\n%s\nLast 40 log lines:\n%s\n' \
     "$(hostname)" \
     "$(printf '  - %s\n' "${FAILED_USERS[@]}")" \
+    "$(if [ "${#TIMED_OUT[@]}" -gt 0 ]; then
+         printf '\nGave up on these after %s minutes each — they may simply be too\nlarge for that limit, which is ACCOUNT_TIMEOUT_MIN in %s:\n%s\n' \
+           "$ACCOUNT_TIMEOUT_MIN" "$SKYSERVER_CONF" "$(printf '  - %s\n' "${TIMED_OUT[@]}")"
+       fi)" \
     "$(tail -n 40 "$LOG")")"
   exit 1
 fi

@@ -370,6 +370,32 @@ a full-account restore runs for far longer than that, so the next tick used
 to pick the same request up again and run a second `/scripts/restorepkg`
 over the same account while the first was still going.
 
+**The nightly run stops on one account and never moves on**
+
+Fixed in 0.8.3, in three parts.
+
+A single account that hangs used to stall the whole run, and because the run
+holds a lock, every following night was skipped as well. Each account now
+gets `ACCOUNT_TIMEOUT_MIN` minutes (default 90, settable in the WHM
+dashboard) before the run gives up on it, logs why, and moves to the next.
+
+The lock itself was leaking. `exec 200>lock` hands that descriptor to every
+child, so `pkgacct` — and anything it left behind — inherited it. One
+orphaned process was then enough to make every later run exit with "another
+backup run is already in progress", permanently. Children are now started
+with it closed.
+
+And the live-progress watcher added in 0.8.0 was measuring with `du -sk` over
+the staging directory every three seconds. On a large account that is a full
+tree walk against the same disk `pkgacct` is reading — a progress bar that
+had become a second workload. It now starts at fifteen seconds and backs off
+to whatever the measurement itself turns out to cost, and writes a line to
+the log every five minutes so a long account can be told from a stopped one.
+
+A run that is killed outright — the OOM killer, a reboot — now writes
+`Backup run interrupted` on its way out, instead of leaving a `started` line
+that reads exactly like a run still in progress.
+
 **A restore fails with "full account restore failed"**
 
 Fixed in 0.8.2 — or rather, that message was. It covered two completely

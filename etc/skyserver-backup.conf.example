@@ -29,6 +29,12 @@ BACKUP_WORK_DIR="/root"
 # the server, not just the backup, so this margin is deliberately generous.
 DISK_SAFETY_MARGIN_MB=2048
 
+# How many minutes one account may take before the run gives up on it and
+# moves to the next. Without a limit a single account that hangs stalls the
+# whole nightly run, and because the run holds a lock every following night
+# is skipped too. Raise it if you host accounts that genuinely take longer.
+ACCOUNT_TIMEOUT_MIN=90
+
 # Set to 1 to let cPanel users restore their own backups from their
 # dashboard. Leave it 0 until you have verified a restore yourself on a
 # throwaway account: a restore overwrites the account's live data and

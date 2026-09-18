@@ -111,7 +111,12 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
   printf '%s' '"/></svg>' >> "$ICON_DIR/skyserver_backup.svg"
 
   chmod 644 "$ICON_DIR/skyserver_backup.png" "$ICON_DIR/skyserver_backup.svg"
-  rm -f "$PLUGIN_DEST/skyserver_backup.png"
+
+  # Also left in the plugin's own directory. Themes differ in where they
+  # look for a menu item's image, this copy costs nothing, and deleting it
+  # only closed off one of the places that might work.
+  cp "$ICON_SRC" "$PLUGIN_DEST/skyserver_backup.png"
+  chmod 644 "$PLUGIN_DEST/skyserver_backup.png"
 
   # The icon entry belongs in the theme's own dynamicui directory — that is
   # where cPanel reads menu items from. Without it the pages are served but

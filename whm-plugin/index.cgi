@@ -120,7 +120,7 @@ function write_conf(array $updates): void {
 function public_conf(array $conf): array {
     $keys = ['S3_BUCKET', 'AWS_DEFAULT_REGION', 'S3_ENDPOINT_URL', 'S3_ADDRESSING_STYLE',
              'RETENTION_DAYS', 'ALERT_EMAIL', 'BACKUP_WORK_DIR', 'DISK_SAFETY_MARGIN_MB',
-             'ENABLE_USER_RESTORE'];
+             'ACCOUNT_TIMEOUT_MIN', 'ENABLE_USER_RESTORE'];
     $out = [];
     foreach ($keys as $k) {
         $out[$k] = (string) ($conf[$k] ?? '');
@@ -390,6 +390,7 @@ if ($isApi) {
                 'RETENTION_DAYS' => $_POST['retention_days'] ?? null,
                 'BACKUP_WORK_DIR' => $_POST['work_dir'] ?? null,
                 'DISK_SAFETY_MARGIN_MB' => $_POST['disk_margin'] ?? null,
+                'ACCOUNT_TIMEOUT_MIN' => $_POST['account_timeout'] ?? null,
                 'ENABLE_USER_RESTORE' => (($_POST['user_restore'] ?? '0') === '1') ? '1' : '0',
                 'ALERT_EMAIL' => $_POST['alert_email'] ?? null,
                 'S3_ENDPOINT_URL' => normalize_endpoint($_POST['s3_endpoint'] ?? ''),
@@ -805,6 +806,8 @@ ob_start();
             'Where account tarballs are built before upload. Point it at a partition with room for your largest account.') +
           f('Disk safety margin (MB)', 'disk_margin', c.DISK_SAFETY_MARGIN_MB || '2048', 'number', '2048',
             'An account is skipped rather than filling the disk and taking every site down with it.') +
+          f('Per-account time limit (minutes)', 'account_timeout', c.ACCOUNT_TIMEOUT_MIN || '90', 'number', '90',
+            'The run gives up on an account that takes longer and moves to the next one, so one stuck account cannot stall the whole night.') +
         '</div></div>' +
       '</div>' +
 

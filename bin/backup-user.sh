@@ -61,7 +61,17 @@ WORKDIR="$(mktemp -d "$BACKUP_WORK_DIR/skybackup-${USER}-XXXXXX")"
 # The progress file goes with the work directory: whether this run succeeds,
 # fails or is killed, the account's page must not be left showing a backup
 # that is no longer happening.
-trap 'rm -rf "$WORKDIR"; sky_progress_clear "$USER"' EXIT
+cleanup() {
+  # backup-all.sh gives each account a time limit, so this has to hold for a
+  # run that is cut short as well as one that ends normally — otherwise
+  # pkgacct is left running on a disk nobody is waiting for any more, and
+  # the customer's page keeps showing a backup that stopped.
+  if [ -n "${PKG_PID:-}" ]; then kill "$PKG_PID" 2>/dev/null || true; fi
+  rm -rf "$WORKDIR"
+  sky_progress_clear "$USER"
+}
+trap cleanup EXIT
+trap 'exit 143' INT TERM
 
 TOTAL_STEPS=4
 
@@ -78,15 +88,42 @@ sky_progress "$USER" 1 "$TOTAL_STEPS" "Packaging your account" 0 \
 
 /scripts/pkgacct "$USER" "$WORKDIR" >/dev/null &
 PKG_PID=$!
+
+# Measuring must never cost a meaningful fraction of what it measures. `du`
+# walks the whole staging tree, and on a large account that is seconds of
+# disk time — against the same disk pkgacct is reading. Polled every three
+# seconds it stopped being a progress bar and became a second workload.
+# Start at fifteen seconds and back off to whatever the measurement itself
+# turns out to cost.
+POLL=15
+NEXT_BEAT=$SECONDS
 while kill -0 "$PKG_PID" 2>/dev/null; do
+  BEFORE=$SECONDS
   USED_KB="$(du -sk "$WORKDIR" 2>/dev/null | awk '{print $1}')"
+  COST=$(( SECONDS - BEFORE ))
   if [ -z "$USED_KB" ]; then USED_KB=0; fi
+
   PCT=0
   if [ "$ACCT_KB" -gt 0 ]; then PCT=$(( USED_KB * 100 / ACCT_KB )); fi
   if [ "$PCT" -gt 99 ]; then PCT=99; fi
   sky_progress "$USER" 1 "$TOTAL_STEPS" "Packaging your account" "$PCT" \
     "files, email, DNS and settings"
-  sleep 3
+
+  # An account big enough to make du slow is an account where a coarse
+  # progress bar is fine, and where the disk time matters most.
+  if [ "$COST" -ge 2 ]; then
+    POLL=$(( COST * 20 ))
+    if [ "$POLL" -gt 300 ]; then POLL=300; fi
+  fi
+
+  # A line in the log every few minutes, so an account that is genuinely
+  # taking hours can be told apart from one that has stopped.
+  if [ "$SECONDS" -ge "$NEXT_BEAT" ]; then
+    echo "[*] still packaging $USER — ${PCT}% after $(( SECONDS / 60 ))m"
+    NEXT_BEAT=$(( SECONDS + 300 ))
+  fi
+
+  sleep "$POLL"
 done
 wait "$PKG_PID"   # its exit status is this script's, as it was before
 

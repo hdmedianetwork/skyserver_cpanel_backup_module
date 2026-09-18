@@ -14,16 +14,33 @@ QUEUE_DIR="/var/spool/skyserver-backup/restore-requests"
 STATUS_DIR="/var/spool/skyserver-backup/restore-status"
 mkdir -p "$QUEUE_DIR" "$STATUS_DIR"
 
+# The plugin runs as the cPanel account, so it needs to traverse down here
+# (0751: traversal, no listing) and to drop a request file into the queue.
+# The queue is a drop box — world-writable plus the sticky bit, so an
+# account can add its own request but not remove or replace anyone else's.
+chmod 751 "$(dirname "$QUEUE_DIR")" "$STATUS_DIR" 2>/dev/null || true
+chmod 1733 "$QUEUE_DIR" 2>/dev/null || true
+
+# A status file can carry a presigned download URL, so hand it to the one
+# account entitled to it rather than leaving it world-readable.
+own_status() { # <id> <user>
+  local f="$STATUS_DIR/${1}.json"
+  chmod 640 "$f"
+  chown "root:${2}" "$f" 2>/dev/null || true
+}
+
 write_status() { # <id> <user> <status> [error]
   jq -n --arg id "$1" --arg user "$2" --arg status "$3" --arg error "${4:-}" --arg ts "$(date -Iseconds)" \
     '{id: $id, user: $user, status: $status, updated_at: $ts} + (if $error != "" then {error: $error} else {} end)' \
     > "$STATUS_DIR/${1}.json"
+  own_status "$1" "$2"
 }
 
 write_download_status() { # <id> <user> <url>
   jq -n --arg id "$1" --arg user "$2" --arg url "$3" --arg ts "$(date -Iseconds)" \
     '{id: $id, user: $user, status: "success", download_url: $url, updated_at: $ts}' \
     > "$STATUS_DIR/${1}.json"
+  own_status "$1" "$2"
 }
 
 # The plugin runs as the cPanel user and can't read the root-only config,

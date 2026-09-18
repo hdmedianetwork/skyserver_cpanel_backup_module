@@ -68,6 +68,29 @@ function sky_restore_enabled(): bool {
 }
 
 /**
+ * The stage a backup of this account has reached, or null when none is
+ * running. bin/backup-user.sh writes this while it works and removes it on
+ * the way out, however it exits.
+ */
+function sky_backup_progress(string $user): ?array {
+    $f = SKY_SPOOL_DIR . "/progress/{$user}.json";
+    if (!is_readable($f)) {
+        return null;
+    }
+    $data = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($data) || !isset($data['message'])) {
+        return null;
+    }
+    // A run that was killed without its trap firing would otherwise leave
+    // the page claiming a backup is in progress forever.
+    $age = time() - (int) @filemtime($f);
+    if ($age > 900) {
+        return null;
+    }
+    return $data;
+}
+
+/**
  * Everything the end-user page shows, in the shape its JavaScript renders
  * from — so the first paint and every later refresh come from one place.
  */
@@ -89,6 +112,7 @@ function sky_user_state(string $user): array {
         'backups'        => array_values($backups),
         'visible'        => $visible,
         'restoreEnabled' => sky_restore_enabled(),
+        'backupRunning'  => sky_backup_progress($user),
         'totals'         => [
             'count'     => count($backups),
             'bytes'     => $bytes,

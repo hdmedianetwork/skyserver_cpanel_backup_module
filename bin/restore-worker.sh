@@ -36,6 +36,47 @@ write_status() { # <id> <user> <status> [error]
   own_status "$1" "$2"
 }
 
+# Same file, but carrying where the job has got to. A restore can run for a
+# long time, and "running" on its own tells the customer nothing about
+# whether it is moving.
+write_running() { # <id> <user> <step> <of> <message> [percent] [detail]
+  jq -n --arg id "$1" --arg user "$2" --arg step "$3" --arg of "$4" \
+        --arg msg "$5" --arg pct "${6:-}" --arg detail "${7:-}" --arg ts "$(date -Iseconds)" \
+    '{id: $id, user: $user, status: "running", updated_at: $ts,
+      step: ($step|tonumber), steps: ($of|tonumber), message: $msg}
+     + (if $pct    != "" then {percent: ($pct|tonumber)} else {} end)
+     + (if $detail != "" then {detail: $detail} else {} end)' \
+    > "$STATUS_DIR/${1}.json"
+  own_status "$1" "$2"
+}
+
+# Pulls an object down while reporting how far along it is, by watching the
+# local file grow against the size the bucket reports. Falls back to a plain
+# transfer when the size cannot be determined.
+fetch_with_progress() { # <id> <user> <s3_key> <dest> <step> <of> <message>
+  local id="$1" user="$2" key="$3" dest="$4" step="$5" of="$6" msg="$7"
+  local total have pct
+
+  total="$(s3_object_size "$key")"
+  [ -n "$total" ] || total=0
+
+  s3_download "$key" "$dest" &
+  local dl_pid=$!
+
+  while kill -0 "$dl_pid" 2>/dev/null; do
+    have="$(stat -c %s "$dest" 2>/dev/null || echo 0)"
+    pct=""
+    if [ "$total" -gt 0 ]; then
+      pct=$(( have * 100 / total ))
+      if [ "$pct" -gt 99 ]; then pct=99; fi
+    fi
+    write_running "$id" "$user" "$step" "$of" "$msg" "$pct" \
+      "$(numfmt --to=iec --suffix=B "$have" 2>/dev/null || echo "$have bytes")"
+    sleep 3
+  done
+  wait "$dl_pid"
+}
+
 write_download_status() { # <id> <user> <url>
   jq -n --arg id "$1" --arg user "$2" --arg url "$3" --arg ts "$(date -Iseconds)" \
     '{id: $id, user: $user, status: "success", download_url: $url, updated_at: $ts}' \
@@ -102,6 +143,8 @@ for REQ in "$QUEUE_DIR"/*.json; do
   # A download hands back a time-limited S3 link rather than touching the
   # account, so the user never needs S3 credentials of their own.
   if [ "$TYPE" = "download" ]; then
+    write_running "$ID" "$USER" 1 2 "Locating your backup" "" "$DATE"
+    write_running "$ID" "$USER" 2 2 "Creating a private download link" "" "valid for one hour"
     if URL="$(aws_s3 s3 presign "s3://${S3_BUCKET}/backups/${USER}/${DATE}/full-account.tar.gz" --expires-in 3600 2>/dev/null)"; then
       write_download_status "$ID" "$USER" "$URL"
     else
@@ -114,7 +157,9 @@ for REQ in "$QUEUE_DIR"/*.json; do
   WORKDIR="$(mktemp -d "/root/skyrestore-${USER}-XXXXXX")"
 
   if [ "$TYPE" = "full" ]; then
-    if s3_download "backups/${USER}/${DATE}/full-account.tar.gz" "$WORKDIR/cpmove-${USER}.tar.gz" \
+    if fetch_with_progress "$ID" "$USER" "backups/${USER}/${DATE}/full-account.tar.gz" \
+         "$WORKDIR/cpmove-${USER}.tar.gz" 1 2 "Fetching your backup from storage" \
+       && write_running "$ID" "$USER" 2 2 "Restoring your account" "" "files, email, DNS and databases" \
        && /scripts/restorepkg "$WORKDIR/cpmove-${USER}.tar.gz" >"$WORKDIR/restore.log" 2>&1; then
       write_status "$ID" "$USER" "success"
     else
@@ -133,7 +178,9 @@ for REQ in "$QUEUE_DIR"/*.json; do
         continue
         ;;
     esac
-    if s3_download "backups/${USER}/${DATE}/databases/${DB}.sql.gz" "$WORKDIR/${DB}.sql.gz" \
+    if fetch_with_progress "$ID" "$USER" "backups/${USER}/${DATE}/databases/${DB}.sql.gz" \
+         "$WORKDIR/${DB}.sql.gz" 1 2 "Fetching the database backup" \
+       && write_running "$ID" "$USER" 2 2 "Importing the database" "" "$DB" \
        && gunzip -c "$WORKDIR/${DB}.sql.gz" | mysql_cmd mysql "$DB"; then
       write_status "$ID" "$USER" "success"
     else

@@ -102,6 +102,44 @@ AWSCFG
 fi
 
 USER_RESTORE_MARKER="/var/spool/skyserver-backup/user-restore-enabled"
+SKY_PROGRESS_DIR="/var/spool/skyserver-backup/progress"
+
+# Live progress for the account's own Backup Manager page.
+#
+# A backup takes minutes and a restore can take much longer, and for all of
+# that the customer was looking at a page that said nothing. These write one
+# small file per account which the plugin reads — the same 0640 root:<user>
+# arrangement the manifests use, so an account sees its own progress and
+# nobody else's.
+sky_progress() { # <user> <step> <of> <message> [percent] [detail]
+  local user="$1" step="$2" of="$3" msg="$4" pct="${5:-}" detail="${6:-}"
+  mkdir -p "$SKY_PROGRESS_DIR" 2>/dev/null || return 0
+  chmod 751 "$SKY_PROGRESS_DIR" 2>/dev/null || true
+
+  local f="$SKY_PROGRESS_DIR/${user}.json"
+  # Written to a temporary file and moved into place, so the plugin never
+  # reads a half-written one.
+  jq -n --arg step "$step" --arg of "$of" --arg msg "$msg" \
+        --arg pct "$pct" --arg detail "$detail" --arg ts "$(date -Iseconds)" \
+    '{step: ($step|tonumber), steps: ($of|tonumber), message: $msg, updated_at: $ts}
+     + (if $pct    != "" then {percent: ($pct|tonumber)} else {} end)
+     + (if $detail != "" then {detail: $detail} else {} end)' \
+    > "$f.tmp" 2>/dev/null || return 0
+  mv "$f.tmp" "$f" 2>/dev/null || return 0
+  chmod 640 "$f" 2>/dev/null || true
+  chown "root:${user}" "$f" 2>/dev/null || true
+}
+
+sky_progress_clear() { # <user>
+  rm -f "$SKY_PROGRESS_DIR/${1}.json" "$SKY_PROGRESS_DIR/${1}.json.tmp" 2>/dev/null || true
+}
+
+# The size of an object in the bucket, so a transfer can be reported as a
+# percentage instead of a spinner. Prints nothing when it cannot be found.
+s3_object_size() { # <s3_key>
+  aws_s3 s3api head-object --bucket "$S3_BUCKET" --key "$1" \
+    --query ContentLength --output text 2>/dev/null | tr -dc '0-9' || true
+}
 
 # Every aws call goes through here so the custom endpoint is never
 # forgotten on one of them — and is omitted entirely for real AWS, where

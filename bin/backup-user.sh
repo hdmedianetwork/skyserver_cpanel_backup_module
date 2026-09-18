@@ -41,7 +41,7 @@ mysql_check_access || exit 1
 
 # Refuse to start unless the staging area can hold this account. Filling
 # the disk would take every site on this server down, not just the backup.
-HOME_DIR="$(getent passwd "$USER" | cut -d: -f6)"
+HOME_DIR="$(getent passwd "$USER" 2>/dev/null | cut -d: -f6 || true)"
 if [ -z "$HOME_DIR" ] || [ ! -d "$HOME_DIR" ]; then
   HOME_DIR="/home/$USER"
 fi
@@ -58,17 +58,46 @@ if [ "$AVAIL_KB" -lt "$NEEDED_KB" ]; then
 fi
 
 WORKDIR="$(mktemp -d "$BACKUP_WORK_DIR/skybackup-${USER}-XXXXXX")"
-trap 'rm -rf "$WORKDIR"' EXIT
+# The progress file goes with the work directory: whether this run succeeds,
+# fails or is killed, the account's page must not be left showing a backup
+# that is no longer happening.
+trap 'rm -rf "$WORKDIR"; sky_progress_clear "$USER"' EXIT
+
+TOTAL_STEPS=4
 
 # 1. Full account backup via cPanel's native pkgacct (home dir, mail, DNS,
 #    config, databases — everything cPanel itself would restore).
-/scripts/pkgacct "$USER" "$WORKDIR" >/dev/null
+#
+# This is the long step, so it runs in the background and the staging
+# directory is watched growing against the size of the account itself. That
+# is an estimate — pkgacct compresses as it goes — but it is a real number
+# moving in real time, which is the difference between a customer waiting
+# and a customer wondering whether anything is happening at all.
+sky_progress "$USER" 1 "$TOTAL_STEPS" "Packaging your account" 0 \
+  "files, email, DNS and settings"
+
+/scripts/pkgacct "$USER" "$WORKDIR" >/dev/null &
+PKG_PID=$!
+while kill -0 "$PKG_PID" 2>/dev/null; do
+  USED_KB="$(du -sk "$WORKDIR" 2>/dev/null | awk '{print $1}')"
+  if [ -z "$USED_KB" ]; then USED_KB=0; fi
+  PCT=0
+  if [ "$ACCT_KB" -gt 0 ]; then PCT=$(( USED_KB * 100 / ACCT_KB )); fi
+  if [ "$PCT" -gt 99 ]; then PCT=99; fi
+  sky_progress "$USER" 1 "$TOTAL_STEPS" "Packaging your account" "$PCT" \
+    "files, email, DNS and settings"
+  sleep 3
+done
+wait "$PKG_PID"   # its exit status is this script's, as it was before
 
 ACCT_TARBALL="$(find "$WORKDIR" -maxdepth 1 -name "cpmove-${USER}*.tar.gz" | head -n1)"
 if [ -z "$ACCT_TARBALL" ]; then
   echo "[!] pkgacct produced no tarball for $USER" >&2
   exit 1
 fi
+
+sky_progress "$USER" 2 "$TOTAL_STEPS" "Checking the archive" "" \
+  "making sure it can be restored"
 
 # A tarball that uploads cleanly but won't extract is worse than no backup
 # at all, because it looks like protection. Prove it's readable first.
@@ -78,8 +107,10 @@ if ! tar -tzf "$ACCT_TARBALL" >/dev/null 2>&1; then
 fi
 
 FULL_BYTES="$(stat -c %s "$ACCT_TARBALL")"
-s3_upload "$ACCT_TARBALL" "backups/${USER}/${DATE}/full-account.tar.gz"
 FULL_SIZE="$(du -h "$ACCT_TARBALL" | cut -f1)"
+
+sky_progress "$USER" 3 "$TOTAL_STEPS" "Uploading to secure storage" "" "$FULL_SIZE"
+s3_upload "$ACCT_TARBALL" "backups/${USER}/${DATE}/full-account.tar.gz"
 
 # 2. Separate per-database dumps, for granular restores that don't require
 #    rolling back the whole account.
@@ -123,9 +154,21 @@ list_databases() { # <cpanel_user>
     -e "SHOW DATABASES LIKE '${user}\\_%'" 2>/dev/null || true
 }
 
-DB_LIST=()
+# Collected before the loop so progress can say "2 of 5" rather than
+# counting up towards a total nobody knows.
+ALL_DBS=()
 while IFS= read -r DB; do
-  [ -z "$DB" ] && continue
+  if [ -n "$DB" ]; then ALL_DBS+=("$DB"); fi
+done < <(list_databases "$USER" | sort -u)
+
+DB_TOTAL="${#ALL_DBS[@]}"
+DB_LIST=()
+DB_N=0
+for DB in ${ALL_DBS[@]+"${ALL_DBS[@]}"}; do
+  DB_N=$(( DB_N + 1 ))
+  sky_progress "$USER" 4 "$TOTAL_STEPS" "Backing up databases" \
+    "$(( (DB_N - 1) * 100 / DB_TOTAL ))" "$DB ($DB_N of $DB_TOTAL)"
+
   DUMP="$WORKDIR/${DB}.sql.gz"
   mysql_cmd mysqldump --single-transaction --quick "$DB" | gzip > "$DUMP"
   if ! gzip -t "$DUMP" 2>/dev/null; then
@@ -134,7 +177,7 @@ while IFS= read -r DB; do
   fi
   DB_LIST+=("$DB")
   s3_upload "$DUMP" "backups/${USER}/${DATE}/databases/${DB}.sql.gz"
-done < <(list_databases "$USER" | sort -u)
+done
 
 if [ "${#DB_LIST[@]}" -eq 0 ]; then
   echo "[*] No databases found for $USER — the account tarball is still a full backup."

@@ -55,4 +55,10 @@ echo json_encode([
     'status' => $data['status'] ?? 'unknown',
     'error' => $data['error'] ?? null,
     'download_url' => $data['download_url'] ?? null,
-]);
+    // Where the worker has got to, so the page can show it moving.
+    'step'    => $data['step'] ?? null,
+    'steps'   => $data['steps'] ?? null,
+    'message' => $data['message'] ?? null,
+    'percent' => $data['percent'] ?? null,
+    'detail'  => $data['detail'] ?? null,
+], JSON_UNESCAPED_SLASHES);

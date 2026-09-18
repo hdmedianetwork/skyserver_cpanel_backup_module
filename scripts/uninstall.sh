@@ -32,7 +32,7 @@ echo "[skyserver-backup] Removing the manifest copies from account homes..."
 # gone now, so these would just sit in every customer's home forever.
 for MANIFEST in /var/spool/skyserver-backup/manifests/*.json; do
   [ -e "$MANIFEST" ] || continue
-  HOME_DIR="$(getent passwd "$(basename "$MANIFEST" .json)" | cut -d: -f6)"
+  HOME_DIR="$(getent passwd "$(basename "$MANIFEST" .json)" 2>/dev/null | cut -d: -f6 || true)"
   [ -n "$HOME_DIR" ] && [ -d "$HOME_DIR/.skyserver-backup" ] || continue
   rm -rf "$HOME_DIR/.skyserver-backup"
 done

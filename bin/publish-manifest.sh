@@ -27,7 +27,7 @@ fi
 # manifest, but a server with a jailed filesystem may not expose /var/spool
 # to the account at all, and this copy is always within reach of the only
 # account allowed to see it.
-HOME_DIR="$(getent passwd "$USER" | cut -d: -f6)"
+HOME_DIR="$(getent passwd "$USER" 2>/dev/null | cut -d: -f6 || true)"
 [ -n "$HOME_DIR" ] && [ -d "$HOME_DIR" ] || exit 0
 
 COPY_DIR="$HOME_DIR/.skyserver-backup"

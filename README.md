@@ -243,10 +243,24 @@ tabs.
 - **Databases** — each database in each backup, restorable on its own.
 
 A download or a restore is queued through `action.live.php` and then polled
-through `status.live.php` every three seconds, with the row showing
-*preparing* / *restoring* / *failed* in place of its buttons; a finished
-download starts on its own and leaves the link clickable in case the browser
-blocks that. Polling stops as soon as nothing is in flight. A restore asks
+through `status.live.php` every three seconds. The row shows what the worker
+is actually doing — *Fetching your backup from storage, 1 of 2, 42%* — with
+a bar that keeps moving even before a percentage is known, so "working"
+never reads as "stuck". A finished download starts on its own and leaves the
+link clickable in case the browser blocks that. Polling stops as soon as
+nothing is in flight.
+
+While the nightly job is backing that account up, the page says so, with the
+stage it has reached: packaging, checking the archive, uploading, then each
+database in turn. `bin/backup-user.sh` writes that to
+`/var/spool/skyserver-backup/progress/<user>.json` (`0640 root:<user>`, like
+the manifests) and removes it on the way out however it exits; the page also
+ignores a file older than fifteen minutes, so a run killed without its trap
+firing cannot leave a customer watching a backup that stopped long ago.
+
+The percentages are real, not animation: packaging is measured by watching
+the staging directory grow against the size of the account, and a transfer
+by watching the local file grow against the size the bucket reports. A restore asks
 for confirmation in a dialog that names the account, the date and exactly
 what is about to be overwritten.
 

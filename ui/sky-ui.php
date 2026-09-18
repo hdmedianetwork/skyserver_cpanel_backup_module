@@ -293,6 +293,21 @@ function sky_styles(): string {
 .sky .kv dd { margin:0; font-weight:550; }
 .sky .bar { height:6px; border-radius:99px; background:var(--line-soft); overflow:hidden; margin-top:8px; }
 .sky .bar i { display:block; height:100%; border-radius:99px; background:var(--ok); transition:width .4s ease; }
+
+/* A job that is actually moving. The stripes carry on even when the
+   percentage is unknown, so "working" never looks like "stuck". */
+.sky .prog { min-width:230px; text-align:left; }
+.sky .prog .top { display:flex; align-items:baseline; gap:8px; }
+.sky .prog .what { font-size:12.5px; font-weight:600; color:var(--ink); }
+.sky .prog .pc { margin-left:auto; font-family:var(--mono); font-size:11.5px; color:var(--ink-2); }
+.sky .prog .sub { font-size:11.5px; color:var(--ink-3); margin-top:2px; }
+.sky .prog .bar { margin-top:6px; background:var(--line-soft); }
+.sky .prog .bar i { background:var(--accent); }
+.sky .prog .bar.indet i { width:35%; background:linear-gradient(90deg,
+    transparent, var(--accent) 35%, var(--accent) 65%, transparent);
+  animation:sky-slide 1.25s ease-in-out infinite; }
+@keyframes sky-slide { 0% { transform:translateX(-100%); } 100% { transform:translateX(300%); } }
+.sky .prog .steps-of { font-family:var(--mono); font-size:11px; color:var(--ink-3); }
 @media (max-width:640px) {
   .sky { padding:16px 14px 32px; }
   .sky .mast .tools { width:100%; }

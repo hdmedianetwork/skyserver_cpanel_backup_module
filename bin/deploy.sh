@@ -22,7 +22,8 @@ die() { echo "[skyserver-backup] ERROR: $*" >&2; exit 1; }
 chmod +x "$INSTALL_DIR"/bin/*.sh "$INSTALL_DIR"/scripts/*.sh 2>/dev/null || true
 
 log "Setting up spool directories..."
-mkdir -p "$SPOOL_DIR"/manifests "$SPOOL_DIR"/restore-requests "$SPOOL_DIR"/restore-status "$SPOOL_DIR"/downloads
+mkdir -p "$SPOOL_DIR"/manifests "$SPOOL_DIR"/restore-requests "$SPOOL_DIR"/restore-status \
+         "$SPOOL_DIR"/downloads "$SPOOL_DIR"/progress
 
 # The cPanel end-user plugin runs as the logged-in account, not as root, so
 # every directory on the way to that account's manifest has to be
@@ -32,7 +33,8 @@ mkdir -p "$SPOOL_DIR"/manifests "$SPOOL_DIR"/restore-requests "$SPOOL_DIR"/resto
 # granting a listing, so an account can open its own manifest by name and
 # still cannot discover anyone else's — the manifests themselves stay
 # 0640 root:<user>.
-chmod 751 "$SPOOL_DIR" "$SPOOL_DIR/manifests" "$SPOOL_DIR/restore-status" "$SPOOL_DIR/downloads"
+chmod 751 "$SPOOL_DIR" "$SPOOL_DIR/manifests" "$SPOOL_DIR/restore-status" \
+          "$SPOOL_DIR/downloads" "$SPOOL_DIR/progress"
 
 # The restore queue is a drop box: accounts have to be able to create a
 # request file in it, and the sticky bit stops them removing or replacing

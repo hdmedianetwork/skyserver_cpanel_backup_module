@@ -126,6 +126,13 @@ ob_start();
 
   function renderBanner() {
     var out = '';
+    var b = STATE.backupRunning;
+    if (b) {
+      out += '<div class="note note-ok" style="margin-bottom:14px">' + svg('zap') +
+             '<div style="flex:1 1 auto"><b>A backup of your account is running right now.</b> ' +
+             'You can keep using your site — nothing is taken offline.' +
+             progressBlock(b) + '</div></div>';
+    }
     if (!STATE.visible) {
       out += '<div class="note note-warn" style="margin-bottom:14px">' + svg('alert') +
              '<div><b>Your backup history can\'t be read right now.</b> Your backups are most ' +
@@ -140,17 +147,48 @@ ob_start();
     $('sky-banner').innerHTML = out;
   }
 
-  /** The pill that replaces a row's buttons while its request is in flight. */
+  /**
+   * What is happening, right now, in words the customer can act on — with a
+   * bar that keeps moving even before a percentage is known, so "working"
+   * never reads as "stuck".
+   */
+  function progressBlock(p) {
+    var known = typeof p.percent === 'number' && p.percent >= 0;
+    return '<div class="prog">' +
+      '<div class="top"><span class="what">' + esc(p.message || 'Working') + '</span>' +
+        (p.step && p.steps
+          ? '<span class="steps-of">' + p.step + '/' + p.steps + '</span>' : '') +
+        (known ? '<span class="pc">' + Math.round(p.percent) + '%</span>' : '') +
+      '</div>' +
+      (p.detail ? '<div class="sub">' + esc(p.detail) + '</div>' : '') +
+      '<div class="bar' + (known ? '' : ' indet') + '">' +
+        '<i style="width:' + (known ? Math.max(2, Math.min(100, p.percent)) : 100) + '%"></i>' +
+      '</div>' +
+    '</div>';
+  }
+
+  /** What replaces a row's buttons while its request is in flight. */
   function jobCell(k) {
     var j = JOBS[k];
     if (!j) return '';
     if (j.status === 'ready' && j.url) {
       return ' <a class="dl-link" href="' + esc(j.url) + '">Download ready — click if it didn\'t start</a>';
     }
-    var cls = { failed: 'pill-bad', success: 'pill-ok' }[j.status] || 'pill-info';
-    var live = (j.status === 'queued' || j.status === 'running') ? ' pill-live' : '';
-    return ' <span class="pill ' + cls + live + '">' + esc(j.label || j.status) + '</span>' +
-           (j.error ? ' <span class="dim" style="font-size:12px">' + esc(j.error) + '</span>' : '');
+    if (j.status === 'failed') {
+      return ' <span class="pill pill-bad">failed</span>' +
+             (j.error ? ' <span class="dim" style="font-size:12px">' + esc(j.error) + '</span>' : '');
+    }
+    if (j.status === 'success') {
+      return ' <span class="pill pill-ok">done</span>';
+    }
+    // Queued means the worker has not picked it up yet — it runs once a
+    // minute — so say that rather than showing a bar at zero forever.
+    if (j.status === 'queued' && !j.message) {
+      return progressBlock({ message: j.label === 'restoring' ? 'Waiting to start the restore'
+                                                              : 'Waiting to start',
+                             detail: 'picked up within a minute' });
+    }
+    return progressBlock(j);
   }
 
   function actions(type, date, db) {
@@ -247,12 +285,23 @@ ob_start();
   }
 
   // ------------------------------------------------------------- polling
-  function syncPolling() {
-    var busy = Object.keys(JOBS).some(function (k) {
+  function jobsBusy() {
+    return Object.keys(JOBS).some(function (k) {
       return JOBS[k].status === 'queued' || JOBS[k].status === 'running';
     });
+  }
+
+  function syncPolling() {
+    var busy = jobsBusy() || !!STATE.backupRunning;
     if (busy && !pollTimer) {
-      pollTimer = setInterval(pollAll, 3000);
+      pollTimer = setInterval(function () {
+        // Re-checked on every tick rather than captured when the timer was
+        // created: what is in flight changes while it runs.
+        if (jobsBusy()) pollAll();
+        // A backup is the server's own work, so its progress only arrives
+        // with a fresh read of the state.
+        refreshState(true);
+      }, 3000);
     } else if (!busy && pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;
@@ -278,9 +327,14 @@ ob_start();
           return;
         }
 
-        j.status = res.status;
-        j.label  = res.status === 'running' ? (j.type === 'download' ? 'preparing' : 'restoring') : res.status;
-        j.error  = res.error || null;
+        j.status  = res.status;
+        j.label   = res.status === 'running' ? (j.type === 'download' ? 'preparing' : 'restoring') : res.status;
+        j.error   = res.error || null;
+        j.message = res.message || null;
+        j.detail  = res.detail || null;
+        j.step    = res.step || null;
+        j.steps   = res.steps || null;
+        j.percent = (typeof res.percent === 'number') ? res.percent : null;
         if (res.status === 'success') toast('ok', 'Restore finished.');
         if (res.status === 'failed')  toast('bad', res.error || 'The request failed.');
         renderAll();

@@ -157,8 +157,12 @@ cPanel user dashboard
 
 WHM admin dashboard
   └─ whm-plugin/index.cgi ("SkyServer Backup Manager", root only)
+       ├─ renders the page shell once, then talks to its own JSON API
+       │     (index.cgi?api=state|log|run_now|backup_user|admin_restore|
+       │      save_config|test_s3|update_check|update_apply) — nothing reloads
        ├─ reads manifests/, restore-status/ and the log for the overview
-       ├─ "Run Backup Now" → backs up all accounts on demand
+       ├─ "Run backup now" → backs up all accounts on demand, followed live
+       ├─ queues admin restores into the same drop box the plugin uses
        └─ config form writes /etc/skyserver-backup.conf
 
 cron (root, every minute)
@@ -183,6 +187,32 @@ guarantee:
 | `manifests/` | `0751` | same — and each `<user>.json` is `0640 root:<user>` |
 | `restore-requests/` | `1733` | a drop box: accounts add their own request (`0600`), the sticky bit stops them touching anyone else's |
 | `restore-status/` | `0751` | each status file is `0640 root:<user>`, since it can carry a presigned download URL |
+
+## The WHM dashboard
+
+The admin panel is a single page that never reloads. PHP renders the shell
+once with a snapshot of the state embedded in it, and every button after
+that goes through `index.cgi?api=<action>`, which answers JSON.
+
+- **Overview** — run state, a health checklist (bucket, credentials,
+  accounts with no backup, failures from the last run) and recent restores.
+- **Accounts** — every cPanel account with the age of its latest backup,
+  filterable, with per-account "Back up" and "Restore".
+- **Restores** — queue a restore (account → date → whole account or one
+  database, behind a two-step confirmation) and watch the jobs.
+- **Settings** — destination, retention, alerting and the customer
+  self-restore switch, with a live S3 connection test.
+- **Activity Log** — the tail of `/var/log/skyserver-backup.log`, colourised.
+
+While a backup run or a restore is in flight the page polls itself every
+five seconds so the tiles, the accounts table and the log stay current; when
+nothing is running it makes no requests at all. There is a light and a dark
+theme (the button beside "Refresh"), remembered per browser.
+
+Only actions that change something accept POST, so a prefetched or
+bookmarked URL can never start a backup or a restore. The AWS keys are never
+sent to the browser — the form shows whether credentials are saved and
+leaves them alone unless you type new ones.
 
 ## S3 layout
 

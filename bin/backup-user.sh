@@ -25,6 +25,15 @@ chmod 751 "$(dirname "$MANIFEST_DIR")" "$MANIFEST_DIR" 2>/dev/null || true
 
 echo "[*] Backing up account: $USER"
 
+# This runs per account from backup-all.sh, which has already checked, but
+# also straight from the WHM panel's per-account button — so check here too
+# rather than failing on a bare "command not found" halfway through.
+sky_require_tools jq aws || exit 1
+if [ ! -x /scripts/pkgacct ]; then
+  echo "[!] /scripts/pkgacct is missing or not executable — cPanel cannot package this account." >&2
+  exit 1
+fi
+
 # pkgacct dumps this account's databases too, so a broken MySQL login means
 # a silently incomplete tarball, not just missing .sql.gz files. Prove the
 # credentials work before doing any work at all.

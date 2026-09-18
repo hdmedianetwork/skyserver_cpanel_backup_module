@@ -25,13 +25,36 @@ alert() { # <subject> <body>
 
 echo "===== Backup run started: $(date) =====" >> "$LOG"
 
-ACCOUNTS="$(whmapi1 listaccts --output=jsonpretty | grep -oP '"user"\s*:\s*"\K[^"]+')"
+# Give up loudly. Every abort below writes the reason and a matching
+# "finished" line: a run that stops after "started" and says nothing looks
+# identical to one still in progress, which is exactly how a nightly job
+# that had not worked in days still read as healthy on the dashboard.
+abort() { # <short reason> <detail>
+  echo "[!] $1" >> "$LOG"
+  if [ -n "${2:-}" ]; then echo "$2" >> "$LOG"; fi
+  echo "===== Backup run aborted: $(date) =====" >> "$LOG"
+  alert "[SkyServer Backup] FAILED on $(hostname): $1" \
+"$(printf 'The backup run on %s stopped before backing up anything.\n\n%s\n\n%s\n' \
+    "$(hostname)" "$1" "${2:-}")"
+  exit 1
+}
+
+# whmapi1 lives in /usr/local/cpanel/bin, which cron's PATH does not include.
+# bin/s3-lib.sh puts it back; this catches the case where it genuinely isn't
+# installed, instead of letting the account list come back empty.
+if ! TOOL_ERR="$(sky_require_tools whmapi1 jq aws 2>&1)"; then
+  abort "required commands are missing" "$TOOL_ERR"
+fi
+
+if ! ACCOUNTS_JSON="$(whmapi1 listaccts --output=jsonpretty 2>&1)"; then
+  abort "whmapi1 listaccts failed" "$ACCOUNTS_JSON"
+fi
+
+ACCOUNTS="$(printf '%s' "$ACCOUNTS_JSON" | grep -oP '"user"\s*:\s*"\K[^"]+' || true)"
 
 if [ -z "$ACCOUNTS" ]; then
-  echo "[!] No accounts returned by whmapi1 listaccts — aborting run." >> "$LOG"
-  alert "[SkyServer Backup] FAILED on $(hostname): no accounts found" \
-        "whmapi1 listaccts returned no accounts, so nothing was backed up. Check that WHM is healthy on $(hostname)."
-  exit 1
+  abort "whmapi1 listaccts returned no accounts" \
+        "WHM answered, but the reply named no accounts. Check that WHM is healthy on $(hostname)."
 fi
 
 FAILED_USERS=()

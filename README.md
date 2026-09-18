@@ -300,6 +300,46 @@ everything at once:
 
 ## Troubleshooting
 
+**Nightly backups do nothing, and every restore says "unknown user"**
+
+Fixed in 0.7.1. cron runs its jobs with a bare `PATH`
+(`/sbin:/bin:/usr/sbin:/usr/bin`), which contains none of cPanel's own
+binaries — `whmapi1` lives in `/usr/local/cpanel/bin`. Neither script said so:
+
+- `backup-all.sh` died at its first command substitution, so the log held a
+  `Backup run started` line and nothing else, and the dashboard reported
+  "Last run finished with no failures".
+- `restore-worker.sh` could not verify the account, recorded every request as
+  `unknown user`, and then **deleted it** — losing the customer's request.
+
+Meanwhile the same jobs worked fine from the WHM panel, because cpsrvd's
+environment does have those paths. Upgrade:
+
+```bash
+/opt/skyserver-backup-module/bin/self-update.sh apply
+```
+
+`bin/s3-lib.sh` now puts cPanel's directories on the path itself, the cron
+file carries an explicit `PATH=` line, and both scripts check their tools up
+front and abort with the reason in the log instead of in silence. A restore
+is only discarded when the account genuinely does not exist — if WHM cannot
+be reached, the request stays queued for the next run.
+
+To confirm it on the server:
+
+```bash
+grep '^PATH=' /etc/cron.d/skyserver-backup
+/opt/skyserver-backup-module/bin/backup-all.sh          # should list accounts
+tail -n 40 /var/log/skyserver-backup.log
+```
+
+**A bucket name with a dot in it**
+
+`my.bucket` cannot be reached with virtual-host addressing — the bucket
+becomes a subdomain and a wildcard certificate matches one label only, so
+every upload fails its TLS handshake. Path style is selected automatically
+for such a bucket now, on real Amazon S3 as well as on a custom endpoint.
+
 **The WHM dashboard lists an account's backups, but the account's own
 Backup Manager page says "No backups yet"**
 

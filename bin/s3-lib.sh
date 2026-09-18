@@ -3,6 +3,41 @@
 #   source "$(dirname "$0")/s3-lib.sh"
 set -euo pipefail
 
+# cron runs these scripts with a bare PATH — typically /sbin:/bin:/usr/sbin:
+# /usr/bin — which contains none of cPanel's own binaries. A missing whmapi1
+# is not a visible error, it is an empty account list: backup-all.sh died at
+# its first command substitution without writing a reason, and every restore
+# was recorded as "unknown user" and then thrown away. Every script in this
+# module sources this file, so the path is fixed here rather than in each of
+# them.
+for _sky_dir in /usr/local/cpanel/bin /usr/local/cpanel/scripts /usr/local/bin /usr/local/sbin; do
+  case ":$PATH:" in
+    *":$_sky_dir:"*) ;;
+    *) if [ -d "$_sky_dir" ]; then PATH="$_sky_dir:$PATH"; fi ;;
+  esac
+done
+unset _sky_dir
+export PATH
+
+# Checked up front so a run fails with the reason in hand, rather than dying
+# halfway through on a command substitution that set -e turns into silence.
+sky_require_tools() { # <command>...
+  local missing=() t
+  for t in "$@"; do
+    command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+  done
+  if [ "${#missing[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  echo "[!] Required command(s) not found: ${missing[*]}" >&2
+  echo "[!] PATH was: $PATH" >&2
+  echo "[!] On a cPanel server whmapi1 lives in /usr/local/cpanel/bin, and jq" >&2
+  echo "[!] and aws usually in /usr/local/bin or /usr/bin. If this ran from cron," >&2
+  echo "[!] check the PATH line in /etc/cron.d/skyserver-backup." >&2
+  return 1
+}
+
 : "${SKYSERVER_CONF:=/etc/skyserver-backup.conf}"
 
 if [ ! -f "$SKYSERVER_CONF" ]; then
@@ -43,12 +78,17 @@ if [ -n "$S3_ENDPOINT_URL" ]; then
   esac
 fi
 
-# With virtual-host addressing the bucket becomes a subdomain of the
-# endpoint, so a bucket whose name contains a dot breaks TLS: a wildcard
-# cert matches one label only, and "my.bucket.host" is two. Path-style
-# avoids that and every S3-compatible provider accepts it, so it is the
-# default whenever a custom endpoint is in play.
-if [ -n "$S3_ENDPOINT_URL" ]; then
+# With virtual-host addressing the bucket becomes a subdomain, so a bucket
+# whose name contains a dot breaks TLS: a wildcard certificate matches one
+# label only, and "my.bucket.host" is two. Path style avoids that, and every
+# S3-compatible provider accepts it — so it is the default whenever a custom
+# endpoint is in play, and whenever the bucket name has a dot in it, which is
+# just as fatal on real Amazon S3 as it is anywhere else.
+case "$S3_BUCKET" in
+  *.*) : "${S3_ADDRESSING_STYLE:=path}" ;;
+esac
+
+if [ -n "$S3_ENDPOINT_URL" ] || [ "${S3_ADDRESSING_STYLE:-}" = "path" ]; then
   : "${S3_ADDRESSING_STYLE:=path}"
   AWS_CFG_DIR="/var/spool/skyserver-backup/aws"
   mkdir -p "$AWS_CFG_DIR"

@@ -52,6 +52,15 @@ else
   rm -f "$USER_RESTORE_MARKER"
 fi
 
+# Without cPanel's own binaries there is no way to verify who a request
+# belongs to, and guessing is how every queued restore ended up recorded as
+# "unknown user" and then deleted. Stop before touching the queue: the
+# requests stay where they are and are picked up once this is fixed.
+if ! sky_require_tools whmapi1 jq aws >&2; then
+  echo "[!] restore-worker: cannot run without those commands — the queue is untouched." >&2
+  exit 1
+fi
+
 shopt -s nullglob
 for REQ in "$QUEUE_DIR"/*.json; do
   ID="$(basename "$REQ" .json)"
@@ -73,7 +82,18 @@ for REQ in "$QUEUE_DIR"/*.json; do
   fi
 
   # Ownership check: the request must name a real cPanel account.
-  if ! whmapi1 listaccts --output=jsonpretty | grep -qP "\"user\"\s*:\s*\"${USER}\""; then
+  #
+  # "WHM would not answer" and "that account does not exist" are different
+  # things, and treating the first as the second is destructive: the request
+  # is the only record of what the customer asked for, so a server-side
+  # hiccup must never be what deletes it.
+  if ! ACCTS="$(whmapi1 listaccts --output=jsonpretty 2>&1)"; then
+    write_status "$ID" "$USER" "failed" "could not reach WHM to verify the account — retrying"
+    echo "[!] whmapi1 listaccts failed while checking $USER: $(printf '%s' "$ACCTS" | tr '\n' ' ')" >&2
+    continue   # $REQ stays in the queue for the next run
+  fi
+
+  if ! printf '%s' "$ACCTS" | grep -qP "\"user\"\s*:\s*\"${USER}\""; then
     write_status "$ID" "$USER" "failed" "unknown user"
     rm -f "$REQ"
     continue

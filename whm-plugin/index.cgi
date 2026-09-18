@@ -140,15 +140,31 @@ function whm_accounts(): array {
 }
 
 function latest_run_summary(): array {
-    if (!is_readable(LOG_FILE)) return ['ok' => 0, 'fail' => 0, 'started' => null, 'finished' => null, 'failed_users' => []];
+    if (!is_readable(LOG_FILE)) {
+        return ['ok' => 0, 'fail' => 0, 'attempted' => 0, 'aborted' => false, 'abort_at' => null,
+                'reasons' => [], 'started' => null, 'finished' => null, 'failed_users' => []];
+    }
     $content = file_get_contents(LOG_FILE);
     $chunks = preg_split('/(?====== Backup run started)/', $content);
     $last = end($chunks) ?: '';
     preg_match('/Backup run started: (.+?) =====/', $last, $s);
     preg_match('/Backup run finished: (.+?) =====/', $last, $f);
+    preg_match('/Backup run aborted: (.+?) =====/', $last, $a);
+
+    $ok   = substr_count($last, '[OK]');
+    $fail = substr_count($last, '[FAIL]');
+
+    // The reason an aborted run wrote, so the dashboard can say what went
+    // wrong instead of sending the admin to the log to find out.
+    preg_match_all('/^\[!\] (.+)$/m', $last, $reasons);
+
     return [
-        'ok'       => substr_count($last, '[OK]'),
-        'fail'     => substr_count($last, '[FAIL]'),
+        'ok'       => $ok,
+        'fail'     => $fail,
+        'attempted'=> $ok + $fail,
+        'aborted'  => !empty($a),
+        'abort_at' => $a[1] ?? null,
+        'reasons'  => array_slice($reasons[1] ?? [], 0, 4),
         'started'  => $s[1] ?? null,
         'finished' => $f[1] ?? null,
         'failed_users' => array_values(array_filter(array_map(function ($l) {
@@ -537,9 +553,13 @@ ob_start();
            t.protected + '<span class="dim" style="font-size:15px;font-weight:500"> / ' + t.accounts + '</span>',
            '<div class="bar"><i style="width:' + pct + '%;background:' +
              (unprotected ? 'var(--warn)' : 'var(--ok)') + '"></i></div>') +
-      tile(s.fail ? 'bad' : 'ok', s.fail ? 'alert' : 'checkc', 'Last run',
-           s.ok + ' ok' + (s.fail ? ' · ' + s.fail + ' failed' : ''),
-           esc(s.finished ? 'finished ' + s.finished : (s.started ? 'started ' + s.started : 'never run'))) +
+      tile((s.aborted || (!s.attempted && !STATE.running && s.started)) ? 'bad' : (s.fail ? 'bad' : 'ok'),
+           (s.aborted || s.fail || (!s.attempted && s.started && !STATE.running)) ? 'alert' : 'checkc',
+           'Last run',
+           s.aborted ? 'aborted' : (s.ok + ' ok' + (s.fail ? ' · ' + s.fail + ' failed' : '')),
+           esc(s.aborted ? 'stopped ' + (s.abort_at || '')
+               : (s.finished ? 'finished ' + s.finished
+                  : (s.started ? 'started ' + s.started : 'never run')))) +
       tile('', 'cloud', 'Stored in S3', bytes(t.bytes),
            'across all accounts and dates') +
       tile('', 'clock', 'Retention', esc(c.RETENTION_DAYS || '—') + '<span class="dim" style="font-size:14px;font-weight:500"> days</span>',
@@ -590,8 +610,19 @@ ob_start();
         bad: t.unprotected.length + ' account' + (t.unprotected.length === 1 ? ' has' : 's have') +
              ' no backup yet: ' + esc(t.unprotected.slice(0, 6).join(', ')) +
              (t.unprotected.length > 6 ? ' and ' + (t.unprotected.length - 6) + ' more' : '') },
-      { ok: s.fail === 0, good: 'Last run finished with no failures',
-        bad: s.fail + ' account' + (s.fail === 1 ? '' : 's') + ' failed in the last run: ' + esc((s.failed_users || []).join(', ')) }
+      { ok: !s.aborted && s.attempted > 0 && s.fail === 0,
+        good: 'Last run finished with no failures',
+        bad: s.aborted
+          ? 'The last run stopped before backing up anything' +
+            (s.reasons && s.reasons.length ? ' — ' + esc(s.reasons[0]) : '') +
+            '. Nothing was backed up. <a href="#" data-goto="logs">Open the Activity Log</a>.'
+          : (s.attempted === 0
+              ? (STATE.running
+                  ? 'A run is in progress and has not finished an account yet'
+                  : 'The last run never reported finishing, and backed up no accounts. ' +
+                    '<a href="#" data-goto="logs">Open the Activity Log</a>.')
+              : s.fail + ' account' + (s.fail === 1 ? '' : 's') +
+                ' failed in the last run: ' + esc((s.failed_users || []).join(', '))) }
     ];
 
     var checkHtml = checks.map(function (k) {
@@ -612,11 +643,19 @@ ob_start();
         '<div class="body">' +
           '<dl class="kv">' +
             '<dt>Last started</dt><dd>' + esc(s.started || 'never') + '</dd>' +
-            '<dt>Last finished</dt><dd>' + esc(s.finished || (STATE.running ? 'still running' : '—')) + '</dd>' +
+            '<dt>Last finished</dt><dd>' +
+              esc(s.aborted ? 'aborted ' + (s.abort_at || '')
+                  : (s.finished || (STATE.running ? 'still running' : '—'))) + '</dd>' +
             '<dt>Result</dt><dd>' +
-              '<span class="pill pill-ok">' + s.ok + ' succeeded</span> ' +
-              (s.fail ? '<span class="pill pill-bad">' + s.fail + ' failed</span>' : '') +
+              (s.aborted
+                ? '<span class="pill pill-bad">stopped before backing up anything</span>'
+                : '<span class="pill ' + (s.ok ? 'pill-ok' : 'pill-none') + '">' + s.ok + ' succeeded</span> ' +
+                  (s.fail ? '<span class="pill pill-bad">' + s.fail + ' failed</span>' : '')) +
             '</dd>' +
+            (s.aborted && s.reasons && s.reasons.length
+              ? '<dt>Reason</dt><dd class="mono" style="font-weight:400">' +
+                s.reasons.map(function (r) { return esc(r); }).join('<br>') + '</dd>'
+              : '') +
           '</dl>' +
         '</div>' +
       '</div>' +

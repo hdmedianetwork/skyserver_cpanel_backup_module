@@ -1,6 +1,13 @@
 # SkyServer Backup Module cron jobs — installed to /etc/cron.d/skyserver-backup
 # __INSTALL_DIR__ is substituted with the real install path by install.sh
 
+# cron's own PATH is /sbin:/bin:/usr/sbin:/usr/bin, which has none of cPanel's
+# binaries in it — whmapi1 lives in /usr/local/cpanel/bin and the AWS CLI
+# usually in /usr/local/bin. bin/s3-lib.sh fixes this for itself too; both
+# are here because a nightly job that silently backs up nothing is the worst
+# way to find out.
+PATH=/usr/local/cpanel/bin:/usr/local/cpanel/scripts:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
 # Daily full account + per-database backup for every cPanel account, uploaded to S3
 0 2 * * * root __INSTALL_DIR__/bin/backup-all.sh
 

@@ -66,3 +66,35 @@ function sky_read_manifest(string $user): array {
 function sky_restore_enabled(): bool {
     return file_exists(SKY_SPOOL_DIR . '/user-restore-enabled');
 }
+
+/**
+ * Everything the end-user page shows, in the shape its JavaScript renders
+ * from — so the first paint and every later refresh come from one place.
+ */
+function sky_user_state(string $user): array {
+    [$backups, $visible] = sky_read_manifest($user);
+    $latest = $backups[0] ?? null;
+
+    $bytes = 0;
+    $dbNames = [];
+    foreach ($backups as $b) {
+        $bytes += (int) ($b['full_size_bytes'] ?? 0);
+        foreach (($b['databases'] ?? []) as $db) {
+            $dbNames[$db] = true;
+        }
+    }
+
+    return [
+        'user'           => $user,
+        'backups'        => array_values($backups),
+        'visible'        => $visible,
+        'restoreEnabled' => sky_restore_enabled(),
+        'totals'         => [
+            'count'     => count($backups),
+            'bytes'     => $bytes,
+            'databases' => count($dbNames),
+            'lastDate'  => $latest['date'] ?? null,
+            'lastSize'  => $latest['full_size'] ?? null,
+        ],
+    ];
+}

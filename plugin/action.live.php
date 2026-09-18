@@ -22,7 +22,13 @@ if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
 
 $queueDir = SKY_SPOOL_DIR . '/restore-requests';
 
-$input = json_decode(file_get_contents('php://input'), true) ?: [];
+// The page posts form-encoded, which is what $_POST is filled from. A JSON
+// body is still accepted so a page cached from an earlier version keeps
+// working until the browser picks up the new one.
+$input = $_POST;
+if (!$input) {
+    $input = json_decode((string) file_get_contents('php://input'), true) ?: [];
+}
 $requested = $input['type'] ?? '';
 $type = in_array($requested, ['database', 'download'], true) ? $requested : 'full';
 $date = preg_replace('/[^0-9\-]/', '', $input['date'] ?? '');

@@ -45,6 +45,7 @@ FILES=(
   plugin/skyserver_backup.png
   plugin/status.live.php
   scripts/uninstall.sh
+  ui/sky-ui.php
   whm-plugin/index.cgi
   whm-plugin/skyserver_backup.appconfig
 )
@@ -83,7 +84,7 @@ command -v jq  >/dev/null 2>&1 || die "jq is required but could not be installed
 command -v aws >/dev/null 2>&1 || die "AWS CLI is required but could not be installed automatically. Install it manually and re-run this script."
 
 log "Writing module files to $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR"/bin "$INSTALL_DIR"/etc/cron "$INSTALL_DIR"/etc/logrotate "$INSTALL_DIR"/plugin "$INSTALL_DIR"/whm-plugin "$INSTALL_DIR"/scripts
+mkdir -p "$INSTALL_DIR"/bin "$INSTALL_DIR"/etc/cron "$INSTALL_DIR"/etc/logrotate "$INSTALL_DIR"/plugin "$INSTALL_DIR"/whm-plugin "$INSTALL_DIR"/scripts "$INSTALL_DIR"/ui
 HEADER
 
 for f in "${FILES[@]}"; do

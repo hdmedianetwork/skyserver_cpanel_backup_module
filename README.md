@@ -152,8 +152,9 @@ cron (root, daily)
 cPanel user dashboard
   └─ plugin/index.live.php ("SkyServer Backup Manager")
        ├─ reads the user's own manifest.json (no S3 credentials exposed)
-       ├─ user clicks Restore → plugin/action.live.php queues the request
-       └─ plugin/status.live.php polled by JS until success/failed
+       ├─ user clicks Download/Restore → plugin/action.live.php queues it
+       └─ plugin/status.live.php — ?id= polls one request, ?api=state
+             re-reads this account's backups; nothing reloads the page
 
 WHM admin dashboard
   └─ whm-plugin/index.cgi ("SkyServer Backup Manager", root only)
@@ -188,11 +189,28 @@ guarantee:
 | `restore-requests/` | `1733` | a drop box: accounts add their own request (`0600`), the sticky bit stops them touching anyone else's |
 | `restore-status/` | `0751` | each status file is `0640 root:<user>`, since it can carry a presigned download URL |
 
-## The WHM dashboard
+## The panels
 
-The admin panel is a single page that never reloads. PHP renders the shell
-once with a snapshot of the state embedded in it, and every button after
-that goes through `index.cgi?api=<action>`, which answers JSON.
+Both panels are built from one design system, `ui/sky-ui.php`, which
+`bin/deploy.sh` copies next to each of them — so the customer and their host
+are looking at the same thing, and the two cannot drift apart. It holds the
+stylesheet and a small front-end runtime (`window.SkyUI`): inline SVG icons,
+toasts, the modal, the JSON helper, the light/dark switch and the tab strip.
+Nothing is fetched from a CDN, so both render identically on a server with no
+outbound access.
+
+Each panel fills the width of the page, and hides the row of cPanel's own
+logo and links that the chrome prints above plugin content — it is duplicate
+furniture above a page that has its own heading. That removal is keyed off
+the links themselves rather than a class name, is bounded, and refuses to
+touch any block that also contains the panel, so on a layout it does not
+recognise it changes nothing.
+
+### WHM admin dashboard
+
+A single page that never reloads. PHP renders the shell once with a snapshot
+of the state embedded in it, and every button after that goes through
+`index.cgi?api=<action>`, which answers JSON.
 
 - **Overview** — run state, a health checklist (bucket, credentials,
   accounts with no backup, failures from the last run) and recent restores.
@@ -213,6 +231,28 @@ Only actions that change something accept POST, so a prefetched or
 bookmarked URL can never start a backup or a restore. The AWS keys are never
 sent to the browser — the form shows whether credentials are saved and
 leaves them alone unless you type new ones.
+
+### cPanel end-user page
+
+The same shell, scoped to one account: tiles for how many backups are kept,
+when the last one ran, its size and how many databases it covers, then two
+tabs.
+
+- **Account backups** — every stored date with its size and what it covers,
+  each with **Download** and, when the server allows it, **Restore**.
+- **Databases** — each database in each backup, restorable on its own.
+
+A download or a restore is queued through `action.live.php` and then polled
+through `status.live.php` every three seconds, with the row showing
+*preparing* / *restoring* / *failed* in place of its buttons; a finished
+download starts on its own and leaves the link clickable in case the browser
+blocks that. Polling stops as soon as nothing is in flight. A restore asks
+for confirmation in a dialog that names the account, the date and exactly
+what is about to be overwritten.
+
+The page never holds S3 credentials and never performs a restore itself — it
+only drops a request file into the queue that `bin/restore-worker.sh`, running
+as root, picks up and re-validates.
 
 ## S3 layout
 

@@ -1,8 +1,12 @@
 <?php
 /**
- * AJAX endpoint: polls the status of a restore request. Only returns a
- * status the logged-in user actually owns (checked against the "user"
- * field bin/restore-worker.sh writes into the status file).
+ * Read-only JSON for the cPanel end-user page.
+ *
+ *   ?id=req_...   the status of one restore/download request, which only
+ *                 its owner can see (checked against the "user" field
+ *                 bin/restore-worker.sh writes into the status file)
+ *   ?api=state    this account's backups, for the page's Refresh and for
+ *                 the first paint after a request completes
  */
 require_once __DIR__ . '/liveapi.php';
 require_once __DIR__ . '/manifest.php';
@@ -18,6 +22,11 @@ $user = getenv('REMOTE_USER');
 if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
     http_response_code(403);
     echo json_encode(['ok' => false, 'error' => 'Unable to determine cPanel user.']);
+    exit;
+}
+
+if (($_GET['api'] ?? '') === 'state') {
+    echo json_encode(['ok' => true, 'state' => sky_user_state($user)], JSON_UNESCAPED_SLASHES);
     exit;
 }
 

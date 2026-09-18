@@ -1,16 +1,22 @@
 <?php
 /**
- * SkyServer Backup Manager — cPanel end-user UI.
+ * SkyServer Backup Manager — cPanel end-user page.
  *
- * Reads the per-user manifest written by bin/backup-user.sh (the plugin
- * never gets S3 credentials) and lets the user request a restore via
- * action.live.php (AJAX). A restore is never performed here: this just
- * drops a request file into the queue that bin/restore-worker.sh
- * (running as root via cron) processes — that's the privilege boundary.
+ * Built from the same design system as the WHM admin dashboard
+ * (ui/sky-ui.php, copied next to both by bin/deploy.sh), so a customer and
+ * their host are looking at the same thing.
+ *
+ * The page is a shell: PHP renders it once with a snapshot of this
+ * account's backups embedded in it, and every button after that goes
+ * through status.live.php (reads) and action.live.php (queueing). Nothing
+ * reloads, and a restore is never performed here — the plugin only drops a
+ * request file into a queue that bin/restore-worker.sh, running as root,
+ * picks up. That is the privilege boundary.
  */
 
 require_once __DIR__ . '/liveapi.php';
 require_once __DIR__ . '/manifest.php';
+require_once __DIR__ . '/sky-ui.php';
 
 $user = getenv('REMOTE_USER');
 if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
@@ -24,204 +30,341 @@ if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
 // it doesn't. It is also what gives us cPanel's own sidebar and footer.
 $cpanel = liveapi_connect();
 
-// $manifestVisible separates "this account has no backups yet" from "this
-// page cannot see the backups it has" — they used to render identically.
-[$backups, $manifestVisible] = sky_read_manifest($user);
-$latest = $backups[0] ?? null;
-$dbCount = $latest ? count($latest['databases'] ?? []) : 0;
-$restoreEnabled = sky_restore_enabled();
-
-// Every rule is scoped under .sky. Inside cPanel's own page, bare selectors
-// like table, th or h1 would restyle cPanel's chrome along with ours.
-$SKY_STYLES = <<<'CSS'
-<style>
-  .sky { --blue: #2f6fed; --green: #1f9d55; --red: #d64545; --amber: #c98a1f;
-         --bg: #f4f6f9; --card: #ffffff; --border: #e3e7ee; --text: #24303f; --muted: #6b7688;
-         font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-         color: var(--text); padding: 20px 0; }
-  .sky * { box-sizing: border-box; }
-  .sky h1 { font-size: 20px; margin: 0 0 4px; }
-  .sky .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
-  .sky .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 24px; }
-  .sky .stat { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-          padding: 14px 18px; min-width: 150px; }
-  .sky .stat .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-  .sky .stat .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-  .sky .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-          margin-bottom: 20px; overflow: hidden; }
-  .sky .card h2 { font-size: 14px; margin: 0; padding: 14px 18px; border-bottom: 1px solid var(--border);
-             background: #fafbfd; }
-  .sky table { width: 100%; border-collapse: collapse; }
-  .sky th, .sky td { padding: 10px 18px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--border); }
-  .sky th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
-  .sky tr:last-child td { border-bottom: none; }
-  .sky .badge { display: inline-block; padding: 2px 9px; border-radius: 99px; font-size: 11px; font-weight: 600; }
-  .sky .badge-db { background: #eaf1ff; color: var(--blue); }
-  .sky .btn { border: 1px solid var(--border); background: #fff; border-radius: 6px; padding: 6px 12px;
-         font-size: 12px; cursor: pointer; color: var(--text); }
-  .sky .btn:hover { border-color: var(--blue); color: var(--blue); }
-  .sky .btn:disabled { opacity: .5; cursor: default; }
-  .sky .status-tag { font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 99px; }
-  .sky .status-queued  { background: #fff6e3; color: var(--amber); }
-  .sky .status-running { background: #eaf1ff; color: var(--blue); }
-  .sky .status-success { background: #e8f8ee; color: var(--green); }
-  .sky .status-failed  { background: #fdeaea; color: var(--red); }
-  .sky .empty { padding: 30px 18px; color: var(--muted); font-size: 13px; text-align: center; }
-  .sky .notice { background: #fff6e3; border: 1px solid #f0dcb0; color: #8a6116;
-            padding: 11px 15px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
-  .sky .brand { display: flex; align-items: center; gap: 13px; margin-bottom: 4px; }
-  .sky .brand img { height: 38px; width: auto; max-width: 190px; display: block; }
-  .sky .dl-link { font-size: 12px; font-weight: 600; color: var(--blue); text-decoration: none; }
-</style>
-CSS;
+$initialState = sky_user_state($user);
+$SKY_STYLES = sky_styles();
 
 ob_start();
 ?>
-<div class="brand">
-  <img src="https://ik.imagekit.io/hdmn/skybackupmanager.png" alt="SkyServer Backup Manager">
-  <h1>Backup Manager</h1>
-</div>
-<div class="sub">Automatic daily backups for <strong><?= htmlspecialchars($user) ?></strong>, stored securely off-server.</div>
+<div class="wrap">
 
-<div class="stats">
-  <div class="stat">
-    <div class="label">Total Backups</div>
-    <div class="value"><?= count($backups) ?></div>
+  <div class="mast">
+    <img src="https://ik.imagekit.io/hdmn/skybackupmanager.png" alt="SkyServer Backup Manager">
+    <div class="titles">
+      <h1>Backup Manager</h1>
+      <div class="sub">
+        Automatic daily backups for <strong><?= htmlspecialchars($user) ?></strong>, stored securely off-server
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="tools">
+      <button class="btn btn-icon" id="sky-theme" title="Switch between light and dark" aria-label="Switch theme"></button>
+      <button class="btn" id="sky-refresh" data-icon="refresh">Refresh</button>
+    </div>
   </div>
-  <div class="stat">
-    <div class="label">Last Backup</div>
-    <div class="value"><?= $latest ? htmlspecialchars($latest['date']) : '—' ?></div>
-  </div>
-  <div class="stat">
-    <div class="label">Last Backup Size</div>
-    <div class="value"><?= $latest ? htmlspecialchars($latest['full_size'] ?? '—') : '—' ?></div>
-  </div>
-  <div class="stat">
-    <div class="label">Databases</div>
-    <div class="value"><?= $dbCount ?></div>
-  </div>
-</div>
 
-<?php if (!$manifestVisible): ?>
-  <div class="notice"><strong>Your backup history can't be read on this server right now.</strong>
-    Your backups are most likely still running normally — this page just can't see them.
-    Please contact support and mention "backup manifest unreadable".</div>
-<?php elseif (!$restoreEnabled): ?>
-  <div class="notice">Your backups are running normally. Self-service restore is currently turned off — contact support if you need a backup restored.</div>
-<?php endif; ?>
+  <div id="sky-banner"></div>
+  <div class="tiles" id="sky-tiles"></div>
 
-<?php if (empty($backups)): ?>
-  <div class="card"><div class="empty">
-    <?php if ($manifestVisible): ?>
-      No backups yet — the first daily backup will appear here after it runs.
-    <?php else: ?>
-      Backup history unavailable — see the notice above.
-    <?php endif; ?>
-  </div></div>
-<?php else: ?>
+  <div class="tabs" role="tablist" id="sky-tabs">
+    <button class="tab" role="tab" data-tab="backups" data-icon="drive" aria-selected="true">Account backups <span class="count" id="c-backups">0</span></button>
+    <button class="tab" role="tab" data-tab="databases" data-icon="db" aria-selected="false">Databases <span class="count" id="c-dbs">0</span></button>
+  </div>
 
-<div class="card">
-  <h2>Account Backups</h2>
-  <table>
-    <tr><th>Date</th><th>Size</th><th style="text-align:right">Action</th></tr>
-    <?php foreach ($backups as $b): ?>
-    <tr>
-      <td><?= htmlspecialchars($b['date']) ?></td>
-      <td><?= htmlspecialchars($b['full_size'] ?? '-') ?></td>
-      <td style="text-align:right">
-        <button class="btn restore-btn" data-type="download" data-date="<?= htmlspecialchars($b['date']) ?>">Download</button>
-        <?php if ($restoreEnabled): ?>
-        <button class="btn restore-btn" data-type="full" data-date="<?= htmlspecialchars($b['date']) ?>">Restore</button>
-        <?php endif; ?>
-        <span class="status-slot"></span>
-      </td>
-    </tr>
-    <?php endforeach; ?>
-  </table>
+  <div class="panel" id="p-backups"></div>
+  <div class="panel" id="p-databases" hidden></div>
+
+  <noscript>
+    <div class="note note-warn" style="margin-top:16px">
+      This page needs JavaScript. cPanel itself requires it too, so enabling it for this
+      browser will bring both back.
+    </div>
+  </noscript>
 </div>
 
-<div class="card">
-  <h2>Database Backups</h2>
-  <table>
-    <tr><th>Date</th><th>Database</th><?php if ($restoreEnabled): ?><th style="text-align:right">Action</th><?php endif; ?></tr>
-    <?php foreach ($backups as $b): foreach (($b['databases'] ?? []) as $db): ?>
-    <tr>
-      <td><?= htmlspecialchars($b['date']) ?></td>
-      <td><span class="badge badge-db"><?= htmlspecialchars($db) ?></span></td>
-      <?php if ($restoreEnabled): ?>
-      <td style="text-align:right">
-        <button class="btn restore-btn" data-type="database" data-date="<?= htmlspecialchars($b['date']) ?>" data-db="<?= htmlspecialchars($db) ?>">Restore</button>
-        <span class="status-slot"></span>
-      </td>
-      <?php endif; ?>
-    </tr>
-    <?php endforeach; endforeach; ?>
-  </table>
-</div>
+<div class="sky-toasts" id="sky-toasts"></div>
 
-<?php endif; ?>
-
+<?= sky_runtime_js() ?>
 <script>
-document.querySelectorAll('.restore-btn').forEach(function (btn) {
-  btn.addEventListener('click', function () {
-    var type = btn.dataset.type, date = btn.dataset.date, db = btn.dataset.db || '';
+(function () {
+  "use strict";
 
-    // A download only reads the backup, so it doesn't need the "this will
-    // overwrite your data" warning a restore does.
-    if (type !== 'download') {
-      var label = type === 'full' ? 'your entire account' : ('database "' + db + '"');
-      if (!confirm('This will overwrite ' + label + ' with the backup from ' + date + '. Continue?')) return;
+  var STATE = <?= json_encode($initialState, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES) ?>;
+
+  var UI = window.SkyUI;
+  var svg = UI.svg, esc = UI.esc, bytes = UI.bytes, ago = UI.ago,
+      toast = UI.toast, modal = UI.modal, withBusy = UI.withBusy,
+      paintIcons = UI.paintIcons, emptyState = UI.emptyState;
+  var $ = function (id) { return document.getElementById(id); };
+
+  // One entry per row the customer has acted on, keyed the same way the row
+  // is, so a re-render puts the pill back where it belongs instead of
+  // losing it. Nothing here is persisted: a reload starts clean, and the
+  // request itself lives in the queue on the server either way.
+  var JOBS = {};
+  var pollTimer = null;
+  var showTab = function () {};
+
+  function key(type, date, db) { return type + '|' + date + '|' + (db || ''); }
+
+  // ------------------------------------------------------------- renders
+  function tile(cls, iconName, label, value, meta) {
+    return '<div class="tile ' + cls + '"><div class="ico">' + svg(iconName) + '</div>' +
+           '<div><div class="k">' + esc(label) + '</div><div class="v">' + value + '</div>' +
+           (meta ? '<div class="meta">' + meta + '</div>' : '') + '</div></div>';
+  }
+
+  function renderTiles() {
+    var t = STATE.totals;
+    var days = UI.daysSince(t.lastDate);
+    var fresh = days !== null && days <= 1;
+
+    $('sky-tiles').innerHTML =
+      tile(t.count ? 'ok' : '', 'shield', 'Backups kept',
+           t.count, t.count ? 'one per day, oldest removed automatically' : 'nothing stored yet') +
+      tile(t.count ? (fresh ? 'ok' : 'warn') : '', 'clock', 'Last backup',
+           esc(t.lastDate || '—'),
+           days === null ? 'no backup has run yet'
+             : days === 0 ? 'taken today' : days === 1 ? 'taken yesterday' : days + ' days ago') +
+      tile('', 'cloud', 'Last backup size', esc(t.lastSize || '—'),
+           t.bytes ? bytes(t.bytes) + ' stored in total' : '') +
+      tile('', 'db', 'Databases', t.databases,
+           t.databases ? 'each one also backed up on its own' : 'none on this account');
+
+    $('c-backups').textContent = STATE.backups.length;
+    $('c-dbs').textContent = STATE.totals.databases;
+  }
+
+  function renderBanner() {
+    var out = '';
+    if (!STATE.visible) {
+      out += '<div class="note note-warn" style="margin-bottom:14px">' + svg('alert') +
+             '<div><b>Your backup history can\'t be read right now.</b> Your backups are most ' +
+             'likely still running normally — this page just can\'t see them. Please contact ' +
+             'support and mention "backup manifest unreadable".</div></div>';
+    } else if (!STATE.restoreEnabled) {
+      out += '<div class="note" style="margin-bottom:14px">' + svg('lock') +
+             '<div><b>Your backups are running normally.</b> Restoring a backup yourself is ' +
+             'turned off on this server — you can still download any backup, and support can ' +
+             'restore one for you.</div></div>';
     }
+    $('sky-banner').innerHTML = out;
+  }
 
-    var slot = btn.parentElement.querySelector('.status-slot');
-    btn.disabled = true;
-    slot.innerHTML = '<span class="status-tag status-queued">' +
-      (type === 'download' ? 'preparing link…' : 'queued') + '</span>';
+  /** The pill that replaces a row's buttons while its request is in flight. */
+  function jobCell(k) {
+    var j = JOBS[k];
+    if (!j) return '';
+    if (j.status === 'ready' && j.url) {
+      return ' <a class="dl-link" href="' + esc(j.url) + '">Download ready — click if it didn\'t start</a>';
+    }
+    var cls = { failed: 'pill-bad', success: 'pill-ok' }[j.status] || 'pill-info';
+    var live = (j.status === 'queued' || j.status === 'running') ? ' pill-live' : '';
+    return ' <span class="pill ' + cls + live + '">' + esc(j.label || j.status) + '</span>' +
+           (j.error ? ' <span class="dim" style="font-size:12px">' + esc(j.error) + '</span>' : '');
+  }
 
-    fetch('action.live.php', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: type, date: date, db: db })
-    }).then(function (r) { return r.json(); }).then(function (res) {
-      if (!res.ok) {
-        slot.innerHTML = '<span class="status-tag status-failed">error</span> ' + (res.error || '');
-        btn.disabled = false;
-        return;
-      }
-      poll(res.id, slot, btn);
-    }).catch(function () {
-      slot.innerHTML = '<span class="status-tag status-failed">error</span> network error';
-      btn.disabled = false;
+  function actions(type, date, db) {
+    var k = key(type, date, db);
+    if (JOBS[k]) return jobCell(k);
+
+    var attrs = 'data-date="' + esc(date) + '"' + (db ? ' data-db="' + esc(db) + '"' : '');
+    var out = '';
+    if (type === 'account') {
+      out += '<button class="btn btn-sm" data-act="download" ' + attrs + '>Download</button> ';
+    }
+    if (STATE.restoreEnabled) {
+      out += '<button class="btn btn-sm" data-act="restore" data-type="' +
+             (db ? 'database' : 'full') + '" ' + attrs + '>Restore</button>';
+    }
+    return out;
+  }
+
+  function renderBackups() {
+    var body = STATE.backups.length
+      ? '<div class="tbl-scroll"><table><thead><tr>' +
+          '<th>Date</th><th>Size</th><th>Includes</th><th class="right">Actions</th>' +
+        '</tr></thead><tbody>' +
+        STATE.backups.map(function (b) {
+          var dbs = b.databases || [];
+          return '<tr>' +
+            '<td class="nowrap mono"><b>' + esc(b.date) + '</b></td>' +
+            '<td class="nowrap mono">' + esc(b.full_size || '—') + '</td>' +
+            '<td class="dim">Files, email, DNS' +
+              (dbs.length ? ' and <span class="chip">' + dbs.length + ' database' + (dbs.length === 1 ? '' : 's') + '</span>' : '') +
+            '</td>' +
+            '<td class="right nowrap">' + actions('account', b.date) + '</td>' +
+          '</tr>';
+        }).join('') + '</tbody></table></div>'
+      : emptyState('inbox',
+          STATE.visible ? 'No backups yet' : 'Backup history unavailable',
+          STATE.visible ? 'The first daily backup will appear here once it has run.'
+                        : 'See the notice above.');
+
+    $('p-backups').innerHTML =
+      '<div class="card">' +
+        '<header><div class="grow"><h2>Account backups</h2>' +
+          '<div class="hint">A complete copy of your account — files, email, DNS and databases.</div></div>' +
+        '</header>' + body +
+      '</div>' +
+      '<div class="card"><div class="body"><div class="note">' + svg('info') +
+        '<div><b>Downloads are a private, time-limited link.</b> Preparing one takes up to a ' +
+        'minute; the download then starts on its own and the link expires after an hour.' +
+        (STATE.restoreEnabled
+          ? ' <b>Restoring overwrites your live data and cannot be undone.</b>' : '') +
+        '</div></div></div></div>';
+  }
+
+  function renderDatabases() {
+    var rows = [];
+    STATE.backups.forEach(function (b) {
+      (b.databases || []).forEach(function (db) { rows.push({ date: b.date, db: db }); });
     });
-  });
-});
 
-function poll(id, slot, btn) {
-  fetch('status.live.php?id=' + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (res) {
-    if (!res.ok) {
-      slot.innerHTML = '<span class="status-tag status-failed">error</span>';
-      btn.disabled = false;
-      return;
+    var body = rows.length
+      ? '<div class="tbl-scroll"><table><thead><tr>' +
+          '<th>Date</th><th>Database</th>' +
+          (STATE.restoreEnabled ? '<th class="right">Actions</th>' : '') +
+        '</tr></thead><tbody>' +
+        rows.map(function (r) {
+          return '<tr>' +
+            '<td class="nowrap mono">' + esc(r.date) + '</td>' +
+            '<td><span class="chip">' + esc(r.db) + '</span></td>' +
+            (STATE.restoreEnabled
+              ? '<td class="right nowrap">' + actions('database', r.date, r.db) + '</td>' : '') +
+          '</tr>';
+        }).join('') + '</tbody></table></div>'
+      : emptyState('db',
+          STATE.visible ? 'No databases in your backups' : 'Backup history unavailable',
+          STATE.visible ? 'This account has no databases, so there is nothing to list here.'
+                        : 'See the notice above.');
+
+    $('p-databases').innerHTML =
+      '<div class="card">' +
+        '<header><div class="grow"><h2>Databases</h2>' +
+          '<div class="hint">Each database is also stored on its own, so one can be put back ' +
+            'without rolling back the whole account.</div></div>' +
+        '</header>' + body +
+      '</div>';
+  }
+
+  function renderAll() {
+    renderTiles();
+    renderBanner();
+    renderBackups();
+    renderDatabases();
+    paintIcons(document);
+    syncPolling();
+  }
+
+  // ------------------------------------------------------------- polling
+  function syncPolling() {
+    var busy = Object.keys(JOBS).some(function (k) {
+      return JOBS[k].status === 'queued' || JOBS[k].status === 'running';
+    });
+    if (busy && !pollTimer) {
+      pollTimer = setInterval(pollAll, 3000);
+    } else if (!busy && pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
     }
-    if (res.status === 'success' && res.download_url) {
-      // The link is a short-lived S3 URL, so start the download straight
-      // away and leave it clickable in case the browser blocks that.
-      slot.innerHTML = ' <a class="dl-link" href="' + res.download_url + '">Download ready — click if it doesn\'t start</a>';
-      window.location.href = res.download_url;
-      btn.disabled = false;
-      return;
-    }
-    slot.innerHTML = '<span class="status-tag status-' + res.status + '">' + res.status + '</span>';
-    if (res.status === 'success' || res.status === 'failed') {
-      if (res.status === 'failed' && res.error) {
-        slot.innerHTML += ' <small>' + res.error + '</small>';
-      }
-      btn.disabled = false;
-      return;
-    }
-    setTimeout(function () { poll(id, slot, btn); }, 3000);
+  }
+
+  function pollAll() {
+    Object.keys(JOBS).forEach(function (k) {
+      var j = JOBS[k];
+      if (j.status !== 'queued' && j.status !== 'running') return;
+
+      UI.api('status.live.php?id=' + encodeURIComponent(j.id)).then(function (res) {
+        if (!res.ok) { j.status = 'failed'; j.error = res.error; renderAll(); return; }
+
+        if (res.status === 'success' && res.download_url) {
+          // The link is a short-lived S3 URL, so start the download straight
+          // away and leave it clickable in case the browser blocks that.
+          j.status = 'ready';
+          j.url = res.download_url;
+          renderAll();
+          toast('ok', 'Your download is ready.');
+          window.location.href = res.download_url;
+          return;
+        }
+
+        j.status = res.status;
+        j.label  = res.status === 'running' ? (j.type === 'download' ? 'preparing' : 'restoring') : res.status;
+        j.error  = res.error || null;
+        if (res.status === 'success') toast('ok', 'Restore finished.');
+        if (res.status === 'failed')  toast('bad', res.error || 'The request failed.');
+        renderAll();
+      }).catch(function () {
+        // A poll that fails is not worth a toast every three seconds; the
+        // next one usually succeeds.
+      });
+    });
+  }
+
+  // ------------------------------------------------------------- actions
+  function queue(btn, type, date, db, label) {
+    var k = key(type === 'download' ? 'account' : (db ? 'database' : 'account'), date, db);
+    return withBusy(btn, UI.api('action.live.php', { type: type, date: date, db: db || '' }))
+      .then(function (res) {
+        if (!res.ok) { toast('bad', res.error || 'The request was refused.'); return; }
+        JOBS[k] = { id: res.id, type: type, status: 'queued', label: label };
+        toast('info', type === 'download'
+          ? 'Preparing your download — this can take up to a minute.'
+          : 'Restore queued — it starts within a minute.');
+        renderAll();
+      }).catch(function () {});
+  }
+
+  function onDownload(btn) {
+    queue(btn, 'download', btn.dataset.date, '', 'preparing');
+  }
+
+  function onRestore(btn) {
+    var date = btn.dataset.date, db = btn.dataset.db || '';
+    var what = db ? 'the database <b>' + esc(db) + '</b>' : '<b>your entire account</b>';
+
+    modal({
+      icon: 'alert',
+      danger: true,
+      title: 'Restore from ' + date + '?',
+      confirmLabel: db ? 'Yes, overwrite this database' : 'Yes, overwrite my account',
+      body: '<p>This replaces ' + what + ' with the backup taken on <b>' + esc(date) + '</b>.</p>' +
+            '<ul><li>Everything changed since then is lost.</li>' +
+            '<li>There is no undo.</li>' +
+            '<li>The restore starts within a minute and runs in the background.</li></ul>'
+    }).then(function (yes) {
+      if (yes) queue(btn, db ? 'database' : 'full', date, db, 'restoring');
+    });
+  }
+
+  function refreshState(quiet) {
+    return UI.api('status.live.php?api=state').then(function (res) {
+      if (!res.ok) throw new Error(res.error || 'Could not read your backups.');
+      STATE = res.state;
+      renderAll();
+    }).catch(function (err) {
+      if (!quiet) throw err;
+    });
+  }
+
+  // -------------------------------------------------------- event wiring
+  // One delegated listener: the tables are re-rendered from state, so
+  // per-button handlers would have to be re-attached on every repaint.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('[data-act]') : null;
+    if (!btn) return;
+    if (btn.dataset.act === 'download')     onDownload(btn);
+    else if (btn.dataset.act === 'restore') onRestore(btn);
   });
-}
+
+  $('sky-refresh').addEventListener('click', function () {
+    var btn = this;
+    withBusy(btn, refreshState()).then(function () { toast('ok', 'Refreshed.'); })
+      .catch(function () {});
+  });
+
+  // ---------------------------------------------------------------- init
+  UI.initTheme();
+
+  // cPanel prints its own logo and a row of cpanel.net links above plugin
+  // content, and caps the width of the container it puts us in. Neither
+  // helps a page that has its own heading and its own tables.
+  UI.hideChromeBranding();
+  UI.fillWidth();
+
+  renderAll();
+  showTab = UI.tabs(['backups', 'databases']);
+})();
 </script>
 
 <?php
@@ -234,7 +377,7 @@ $header = $cpanel ? (string) $cpanel->header('Backup Manager') : '';
 if (stripos($header, '<html') !== false) {
     echo $header;
     echo $SKY_STYLES;
-    echo '<div class="sky">' . $body . '</div>';
+    echo '<div class="sky" id="sky-root" data-theme="light">' . $body . '</div>';
     echo (string) $cpanel->footer();
 } else {
     echo "<!DOCTYPE html>\n<html>\n<head>\n";
@@ -242,9 +385,9 @@ if (stripos($header, '<html') !== false) {
     echo '<meta name="viewport" content="width=device-width, initial-scale=1">' . "\n";
     echo "<title>Backup Manager</title>\n";
     echo $SKY_STYLES;
-    echo "<style>body { margin:0; padding:0 24px; background:#f4f6f9; }</style>\n";
+    echo "<style>html,body { margin:0; padding:0; background:#f6f7f9; }</style>\n";
     echo "</head>\n<body>\n";
-    echo '<div class="sky">' . $body . '</div>';
+    echo '<div class="sky" id="sky-root" data-theme="light">' . $body . '</div>';
     echo "\n</body>\n</html>\n";
 }
 

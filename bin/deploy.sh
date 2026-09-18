@@ -84,6 +84,10 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
   PLUGIN_DEST="${THEME_DIR}skyserver_backup"
   mkdir -p "$PLUGIN_DEST"
   cp "$INSTALL_DIR"/plugin/*.php "$PLUGIN_DEST/"
+  # The design system both panels are built from. It lives in ui/ so there
+  # is one copy in the repo, and is placed next to each panel so each can
+  # require it from its own directory.
+  cp "$INSTALL_DIR/ui/sky-ui.php" "$PLUGIN_DEST/"
   chmod 644 "$PLUGIN_DEST"/*.php
 
   # The theme reads a menu item's icon from its own application_icons
@@ -130,6 +134,11 @@ PHP_BIN="$(command -v php || true)"
 mkdir -p "$WHM_CGI_DIR"
 sed "1s|.*|#!${PHP_BIN}|" "$INSTALL_DIR/whm-plugin/index.cgi" > "$WHM_CGI_DIR/index.cgi"
 chmod 750 "$WHM_CGI_DIR/index.cgi"
+
+# The same shared design system the end-user plugin gets. Not executable and
+# not a CGI — index.cgi requires it from its own directory.
+cp "$INSTALL_DIR/ui/sky-ui.php" "$WHM_CGI_DIR/sky-ui.php"
+chmod 640 "$WHM_CGI_DIR/sky-ui.php"
 
 # Print whatever register_appconfig says rather than swallowing it — a
 # silent failure here means the WHM menu entry never appears, and the

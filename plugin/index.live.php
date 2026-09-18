@@ -175,8 +175,14 @@ ob_start();
       return ' <a class="dl-link" href="' + esc(j.url) + '">Download ready — click if it didn\'t start</a>';
     }
     if (j.status === 'failed') {
+      // The reason the worker reports is a real error line and can be long,
+      // and the cell it sits in does not wrap — so give it a block of its
+      // own rather than letting it push the table sideways.
       return ' <span class="pill pill-bad">failed</span>' +
-             (j.error ? ' <span class="dim" style="font-size:12px">' + esc(j.error) + '</span>' : '');
+             (j.error
+               ? '<div class="dim" style="font-size:12px; white-space:normal; ' +
+                 'max-width:340px; margin-top:4px; text-align:right">' + esc(j.error) + '</div>'
+               : '');
     }
     if (j.status === 'success') {
       return ' <span class="pill pill-ok">done</span>';

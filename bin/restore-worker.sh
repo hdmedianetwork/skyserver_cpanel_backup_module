@@ -27,6 +27,25 @@ fi
 
 log() { echo "[restore] $*" >> "$LOG"; }
 
+# The work directory is removed as soon as the job ends, and it took the only
+# record of what went wrong with it. Keep a copy for the administrator, and
+# put its tail in the backup log so it shows up in the WHM Activity Log
+# without anyone having to go looking for a file.
+keep_log() { # <id> <logfile> <what>
+  local id="$1" src="$2" what="$3" dir="/var/spool/skyserver-backup/restore-logs"
+  log "request $id failed while $what:"
+  if [ -r "$src" ]; then
+    sed -e 's/^/    /' "$src" | tail -n 25 >> "$LOG" || true
+    mkdir -p "$dir" 2>/dev/null || return 0
+    chmod 700 "$dir" 2>/dev/null || true
+    cp "$src" "$dir/${id}.log" 2>/dev/null || true
+    chmod 600 "$dir/${id}.log" 2>/dev/null || true
+    log "full output kept at $dir/${id}.log"
+  else
+    log "    (the command produced no output)"
+  fi
+}
+
 # The plugin runs as the cPanel account, so it needs to traverse down here
 # (0751: traversal, no listing) and to drop a request file into the queue.
 # The queue is a drop box — world-writable plus the sticky bit, so an
@@ -61,6 +80,42 @@ write_running() { # <id> <user> <step> <of> <message> [percent] [detail]
      + (if $detail != "" then {detail: $detail} else {} end)' \
     > "$STATUS_DIR/${1}.json"
   own_status "$1" "$2"
+}
+
+# The first line of a log that looks like the actual error, for showing to
+# the person waiting. Falls back to the last non-empty line, which is where
+# a failing script usually leaves its complaint.
+failure_reason() { # <logfile>
+  local line=""
+  [ -r "$1" ] || { echo "no output was produced"; return; }
+
+  line="$(grep -aiE '\b(error|failed|fatal|denied|refused|cannot|unable|no such|not found|exists)\b' "$1" \
+          | grep -avE '^\s*$' | head -n1 || true)"
+  if [ -z "$line" ]; then
+    line="$(grep -av '^\s*$' "$1" | tail -n1 || true)"
+  fi
+  [ -n "$line" ] || line="no output was produced"
+
+  # One tidy line: no control characters, and short enough to sit in a table
+  # cell without pushing everything else off the screen.
+  printf '%s' "$line" | tr -d '\r' | tr '\t' ' ' | cut -c1-180
+}
+
+# /scripts/restorepkg is built for restoring an account that is gone, and
+# refuses when the account is still there. Putting a backup back over a live
+# account is exactly what this feature does — and what the customer confirmed
+# in a dialog that spelled it out — so it is asked for explicitly. Older
+# cPanel builds that do not take the flag fall back rather than failing on
+# the flag itself.
+run_restorepkg() { # <tarball> <logfile>
+  if /scripts/restorepkg --force "$1" >"$2" 2>&1; then
+    return 0
+  fi
+  if grep -qaiE 'unknown option|invalid option|unrecognized option|usage:' "$2"; then
+    /scripts/restorepkg "$1" >"$2" 2>&1
+    return $?
+  fi
+  return 1
 }
 
 # Is this a real account on this server?
@@ -104,7 +159,9 @@ fetch_with_progress() { # <id> <user> <s3_key> <dest> <step> <of> <message>
   total="$(s3_object_size "$key")"
   [ -n "$total" ] || total=0
 
-  s3_download "$key" "$dest" &
+  # Kept so the caller can say what went wrong. Without this the AWS CLI's
+  # error goes to cron's mailbox and the customer gets "restore failed".
+  s3_download "$key" "$dest" >"${dest}.err" 2>&1 &
   local dl_pid=$!
 
   while kill -0 "$dl_pid" 2>/dev/null; do
@@ -145,6 +202,10 @@ if ! sky_require_tools whmapi1 jq aws >&2; then
   echo "[!] restore-worker: cannot run without those commands — the queue is untouched." >&2
   exit 1
 fi
+
+# Kept output is for diagnosing a failure that just happened, not forever.
+find /var/spool/skyserver-backup/restore-logs -type f -name '*.log' -mtime +30 \
+  -delete 2>/dev/null || true
 
 shopt -s nullglob
 for REQ in "$QUEUE_DIR"/*.json; do
@@ -219,13 +280,25 @@ for REQ in "$QUEUE_DIR"/*.json; do
   WORKDIR="$(mktemp -d "/root/skyrestore-${USER}-XXXXXX")"
 
   if [ "$TYPE" = "full" ]; then
-    if fetch_with_progress "$ID" "$USER" "backups/${USER}/${DATE}/full-account.tar.gz" \
-         "$WORKDIR/cpmove-${USER}.tar.gz" 1 2 "Fetching your backup from storage" \
-       && write_running "$ID" "$USER" 2 2 "Restoring your account" "" "files, email, DNS and databases" \
-       && /scripts/restorepkg "$WORKDIR/cpmove-${USER}.tar.gz" >"$WORKDIR/restore.log" 2>&1; then
+    TARBALL="$WORKDIR/cpmove-${USER}.tar.gz"
+    RLOG="$WORKDIR/restore.log"
+
+    # Split into its two halves. "full account restore failed" covered both
+    # a backup that could not be fetched and a restore that cPanel refused,
+    # and threw away the reason for either.
+    if ! fetch_with_progress "$ID" "$USER" "backups/${USER}/${DATE}/full-account.tar.gz" \
+           "$TARBALL" 1 2 "Fetching your backup from storage"; then
+      write_status "$ID" "$USER" "failed" \
+        "could not fetch your backup from storage — $(failure_reason "${TARBALL}.err")"
+      keep_log "$ID" "${TARBALL}.err" "fetching the backup for $USER"
+
+    elif write_running "$ID" "$USER" 2 2 "Restoring your account" "" "files, email, DNS and databases" \
+         && run_restorepkg "$TARBALL" "$RLOG"; then
       write_status "$ID" "$USER" "success"
+
     else
-      write_status "$ID" "$USER" "failed" "full account restore failed"
+      write_status "$ID" "$USER" "failed" "restore failed — $(failure_reason "$RLOG")"
+      keep_log "$ID" "$RLOG" "restoring $USER"
     fi
 
   elif [ "$TYPE" = "database" ]; then
@@ -240,13 +313,22 @@ for REQ in "$QUEUE_DIR"/*.json; do
         continue
         ;;
     esac
-    if fetch_with_progress "$ID" "$USER" "backups/${USER}/${DATE}/databases/${DB}.sql.gz" \
-         "$WORKDIR/${DB}.sql.gz" 1 2 "Fetching the database backup" \
-       && write_running "$ID" "$USER" 2 2 "Importing the database" "" "$DB" \
-       && gunzip -c "$WORKDIR/${DB}.sql.gz" | mysql_cmd mysql "$DB"; then
+    DUMP="$WORKDIR/${DB}.sql.gz"
+    ILOG="$WORKDIR/import.log"
+
+    if ! fetch_with_progress "$ID" "$USER" "backups/${USER}/${DATE}/databases/${DB}.sql.gz" \
+           "$DUMP" 1 2 "Fetching the database backup"; then
+      write_status "$ID" "$USER" "failed" \
+        "could not fetch the database backup — $(failure_reason "${DUMP}.err")"
+      keep_log "$ID" "${DUMP}.err" "fetching $DB for $USER"
+
+    elif write_running "$ID" "$USER" 2 2 "Importing the database" "" "$DB" \
+         && gunzip -c "$DUMP" 2>"$ILOG" | mysql_cmd mysql "$DB" >>"$ILOG" 2>&1; then
       write_status "$ID" "$USER" "success"
+
     else
-      write_status "$ID" "$USER" "failed" "database restore failed"
+      write_status "$ID" "$USER" "failed" "could not import $DB — $(failure_reason "$ILOG")"
+      keep_log "$ID" "$ILOG" "importing $DB for $USER"
     fi
 
   else

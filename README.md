@@ -370,6 +370,32 @@ a full-account restore runs for far longer than that, so the next tick used
 to pick the same request up again and run a second `/scripts/restorepkg`
 over the same account while the first was still going.
 
+**A restore fails with "full account restore failed"**
+
+Fixed in 0.8.2 — or rather, that message was. It covered two completely
+different failures (a backup that could not be fetched from S3, and a restore
+cPanel refused) and threw away the reason for both: `/scripts/restorepkg`
+wrote its output into the work directory, which was deleted moments later.
+
+The two halves are now reported separately, each with the real error:
+
+    could not fetch your backup from storage — fatal error: An error occurred
+    (AccessDenied) when calling the GetObject operation: Access Denied
+
+    restore failed — The account alivemar already exists.
+
+The full output goes to `/var/log/skyserver-backup.log` (visible in the WHM
+dashboard's Activity Log) and a copy is kept at
+`/var/spool/skyserver-backup/restore-logs/<request-id>.log`, root-only, and
+pruned after 30 days.
+
+`/scripts/restorepkg` is also now called with `--force`. It is built for
+restoring an account that is gone and refuses when the account is still
+there, which is the opposite of what this feature does — put a backup back
+over a live account, after the customer confirms exactly that in a dialog
+that spells it out. A cPanel build that does not take the flag falls back to
+calling it without, rather than failing on the flag itself.
+
 **A bucket name with a dot in it**
 
 `my.bucket` cannot be reached with virtual-host addressing — the bucket

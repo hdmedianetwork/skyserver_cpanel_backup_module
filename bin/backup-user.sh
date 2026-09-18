@@ -15,6 +15,13 @@ DATE="$(date +%F)"
 MANIFEST_DIR="/var/spool/skyserver-backup/manifests"
 
 mkdir -p "$MANIFEST_DIR" "$BACKUP_WORK_DIR"
+# The end-user plugin runs as the cPanel account and has to be able to
+# traverse down to its own manifest. deploy.sh sets these modes too; doing
+# it here as well keeps a spool directory created by hand — or by an older
+# version of this module — from silently hiding every backup from the
+# account it belongs to. 0751 is traversal without a listing, so no account
+# can enumerate another's manifests.
+chmod 751 "$(dirname "$MANIFEST_DIR")" "$MANIFEST_DIR" 2>/dev/null || true
 
 echo "[*] Backing up account: $USER"
 
@@ -137,7 +144,8 @@ if [ -f "$MANIFEST_FILE" ]; then
 else
   echo "[$ENTRY]" | jq '.' > "$MANIFEST_FILE"
 fi
-chmod 640 "$MANIFEST_FILE"
-chown "root:${USER}" "$MANIFEST_FILE" 2>/dev/null || true
+# Hand the manifest to the account it describes, so its Backup Manager
+# page can actually list what was just uploaded.
+"$SCRIPT_DIR/publish-manifest.sh" "$USER"
 
 echo "[*] Done: $USER ($FULL_SIZE, ${#DB_LIST[@]} databases)"

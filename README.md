@@ -143,7 +143,9 @@ cron (root, daily)
        │     ├─ /scripts/pkgacct <user>         → full account tarball
        │     ├─ mysqldump per database           → per-DB .sql.gz
        │     ├─ upload both to S3 under backups/<user>/<date>/
-       │     └─ write /var/spool/skyserver-backup/manifests/<user>.json
+       │     ├─ write /var/spool/skyserver-backup/manifests/<user>.json
+       │     └─ bin/publish-manifest.sh <user>   → hands that manifest to
+       │           the account (0640 root:<user>, plus a copy in its home)
        └─ bin/retention-cleanup.sh                → deletes S3 objects
                                                      older than RETENTION_DAYS
 
@@ -171,6 +173,16 @@ The end-user plugin never gets S3 or root access — it only writes a
 request file. The actual restore always runs as root via the cron worker,
 after an ownership check. This keeps one customer from ever being able to
 restore or read another customer's backup.
+
+The spool directory is shared by every account, so its modes carry that
+guarantee:
+
+| Path | Mode | Why |
+| --- | --- | --- |
+| `/var/spool/skyserver-backup/` | `0751` | accounts traverse it; none can list it |
+| `manifests/` | `0751` | same — and each `<user>.json` is `0640 root:<user>` |
+| `restore-requests/` | `1733` | a drop box: accounts add their own request (`0600`), the sticky bit stops them touching anyone else's |
+| `restore-status/` | `0751` | each status file is `0640 root:<user>`, since it can carry a presigned download URL |
 
 ## S3 layout
 
@@ -217,6 +229,40 @@ everything at once:
 6. Only then set self-service restore to Enabled in the WHM dashboard.
 
 ## Troubleshooting
+
+**The WHM dashboard lists an account's backups, but the account's own
+Backup Manager page says "No backups yet"**
+
+The end-user plugin runs as the cPanel account, not as root, so it has to be
+able to traverse down to `/var/spool/skyserver-backup/manifests/`. Versions
+before 0.5.1 left that spool directory `0750 root:root`, which no account
+could enter — so every account saw an empty page while the backups
+themselves ran perfectly. Upgrade, which also repairs the existing
+manifests:
+
+```bash
+/opt/skyserver-backup-module/bin/self-update.sh apply
+```
+
+Then check the modes — the directories are traversable but not listable, so
+no account can enumerate another's:
+
+```bash
+ls -ld /var/spool/skyserver-backup /var/spool/skyserver-backup/manifests
+#   drwxr-x--x root root   (0751)
+ls -l /var/spool/skyserver-backup/manifests/
+#   -rw-r----- root <user>  (0640, one file per account)
+```
+
+A single account can be re-published without waiting for the nightly run:
+
+```bash
+/opt/skyserver-backup-module/bin/publish-manifest.sh <user>
+```
+
+The page now tells the two cases apart: an account with no backups yet still
+reads "No backups yet", while an account whose manifest can't be read says so
+explicitly instead of pretending there is nothing there.
 
 **`mysqldump: Got error: 1045: "Access denied for user 'root'@'localhost'
 (using password: NO)"`**

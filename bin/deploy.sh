@@ -23,7 +23,29 @@ chmod +x "$INSTALL_DIR"/bin/*.sh "$INSTALL_DIR"/scripts/*.sh 2>/dev/null || true
 
 log "Setting up spool directories..."
 mkdir -p "$SPOOL_DIR"/manifests "$SPOOL_DIR"/restore-requests "$SPOOL_DIR"/restore-status "$SPOOL_DIR"/downloads
-chmod 750 "$SPOOL_DIR"
+
+# The cPanel end-user plugin runs as the logged-in account, not as root, so
+# every directory on the way to that account's manifest has to be
+# traversable by it. 0750 here is what made the end-user page read "No
+# backups yet" on servers whose backups were running perfectly well: the
+# account could not even reach manifests/. 0751 grants traversal without
+# granting a listing, so an account can open its own manifest by name and
+# still cannot discover anyone else's — the manifests themselves stay
+# 0640 root:<user>.
+chmod 751 "$SPOOL_DIR" "$SPOOL_DIR/manifests" "$SPOOL_DIR/restore-status" "$SPOOL_DIR/downloads"
+
+# The restore queue is a drop box: accounts have to be able to create a
+# request file in it, and the sticky bit stops them removing or replacing
+# anyone else's.
+chmod 1733 "$SPOOL_DIR/restore-requests"
+
+# Re-publish the manifests of accounts backed up before the modes above
+# were right, so an update fixes the end-user page now instead of at the
+# next nightly run.
+for MANIFEST in "$SPOOL_DIR"/manifests/*.json; do
+  [ -e "$MANIFEST" ] || continue
+  "$INSTALL_DIR/bin/publish-manifest.sh" "$(basename "$MANIFEST" .json)" || true
+done
 
 if [ ! -f "$CONF_FILE" ]; then
   cp "$INSTALL_DIR/etc/skyserver-backup.conf.example" "$CONF_FILE"
@@ -61,7 +83,7 @@ for THEME_DIR in "$FRONTEND_BASE"/*/; do
   [ -d "$THEME_DIR" ] || continue
   PLUGIN_DEST="${THEME_DIR}skyserver_backup"
   mkdir -p "$PLUGIN_DEST"
-  cp "$INSTALL_DIR"/plugin/*.live.php "$INSTALL_DIR"/plugin/liveapi.php "$PLUGIN_DEST/"
+  cp "$INSTALL_DIR"/plugin/*.php "$PLUGIN_DEST/"
   chmod 644 "$PLUGIN_DEST"/*.php
 
   # The theme reads a menu item's icon from its own application_icons

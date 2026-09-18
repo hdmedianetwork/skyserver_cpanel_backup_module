@@ -5,6 +5,7 @@
  * field bin/restore-worker.sh writes into the status file).
  */
 require_once __DIR__ . '/liveapi.php';
+require_once __DIR__ . '/manifest.php';
 
 // Connected before a byte is printed, and closed however this script
 // exits — otherwise cPanel appends its LiveAPI complaint to the JSON.
@@ -26,7 +27,7 @@ if (!preg_match('/^req_[a-zA-Z0-9.]+$/', $id)) {
     exit;
 }
 
-$statusFile = "/var/spool/skyserver-backup/restore-status/{$id}.json";
+$statusFile = SKY_SPOOL_DIR . "/restore-status/{$id}.json";
 if (!is_readable($statusFile)) {
     // Not picked up by the worker yet (runs once a minute).
     echo json_encode(['ok' => true, 'status' => 'queued']);

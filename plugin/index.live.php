@@ -10,6 +10,7 @@
  */
 
 require_once __DIR__ . '/liveapi.php';
+require_once __DIR__ . '/manifest.php';
 
 $user = getenv('REMOTE_USER');
 if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
@@ -23,14 +24,12 @@ if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
 // it doesn't. It is also what gives us cPanel's own sidebar and footer.
 $cpanel = liveapi_connect();
 
-$manifestFile = "/var/spool/skyserver-backup/manifests/{$user}.json";
-$backups = [];
-if (is_readable($manifestFile)) {
-    $backups = json_decode(file_get_contents($manifestFile), true) ?: [];
-}
+// $manifestVisible separates "this account has no backups yet" from "this
+// page cannot see the backups it has" — they used to render identically.
+[$backups, $manifestVisible] = sky_read_manifest($user);
 $latest = $backups[0] ?? null;
 $dbCount = $latest ? count($latest['databases'] ?? []) : 0;
-$restoreEnabled = file_exists("/var/spool/skyserver-backup/user-restore-enabled");
+$restoreEnabled = sky_restore_enabled();
 
 // Every rule is scoped under .sky. Inside cPanel's own page, bare selectors
 // like table, th or h1 would restyle cPanel's chrome along with ours.
@@ -103,12 +102,22 @@ ob_start();
   </div>
 </div>
 
-<?php if (!$restoreEnabled): ?>
+<?php if (!$manifestVisible): ?>
+  <div class="notice"><strong>Your backup history can't be read on this server right now.</strong>
+    Your backups are most likely still running normally — this page just can't see them.
+    Please contact support and mention "backup manifest unreadable".</div>
+<?php elseif (!$restoreEnabled): ?>
   <div class="notice">Your backups are running normally. Self-service restore is currently turned off — contact support if you need a backup restored.</div>
 <?php endif; ?>
 
 <?php if (empty($backups)): ?>
-  <div class="card"><div class="empty">No backups yet — the first daily backup will appear here after it runs.</div></div>
+  <div class="card"><div class="empty">
+    <?php if ($manifestVisible): ?>
+      No backups yet — the first daily backup will appear here after it runs.
+    <?php else: ?>
+      Backup history unavailable — see the notice above.
+    <?php endif; ?>
+  </div></div>
 <?php else: ?>
 
 <div class="card">

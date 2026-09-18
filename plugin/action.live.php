@@ -4,6 +4,7 @@
  * Returns JSON { ok: true, id: "..." } or { ok: false, error: "..." }.
  */
 require_once __DIR__ . '/liveapi.php';
+require_once __DIR__ . '/manifest.php';
 
 // Connected before a byte is printed, and closed however this script
 // exits — otherwise cPanel appends its LiveAPI complaint to the JSON.
@@ -19,9 +20,7 @@ if (!$user || !preg_match('/^[a-zA-Z0-9_]+$/', $user)) {
     exit;
 }
 
-$manifestFile = "/var/spool/skyserver-backup/manifests/{$user}.json";
-$queueDir     = "/var/spool/skyserver-backup/restore-requests";
-$restoreMarker = "/var/spool/skyserver-backup/user-restore-enabled";
+$queueDir = SKY_SPOOL_DIR . '/restore-requests';
 
 $input = json_decode(file_get_contents('php://input'), true) ?: [];
 $requested = $input['type'] ?? '';
@@ -32,16 +31,13 @@ $db   = preg_replace('/[^a-zA-Z0-9_]/', '', $input['db'] ?? '');
 // Hiding the buttons isn't enough — this is the boundary a crafted POST
 // would come through. bin/restore-worker.sh checks the same flag again.
 // A download only reads the backup, so it isn't gated by that flag.
-if ($type !== 'download' && !file_exists($restoreMarker)) {
+if ($type !== 'download' && !sky_restore_enabled()) {
     http_response_code(403);
     echo json_encode(['ok' => false, 'error' => 'Self-service restore is disabled. Please contact support.']);
     exit;
 }
 
-$backups = [];
-if (is_readable($manifestFile)) {
-    $backups = json_decode(file_get_contents($manifestFile), true) ?: [];
-}
+[$backups, ] = sky_read_manifest($user);
 
 $validDate = false;
 $validDb = ($type !== 'database');
@@ -69,6 +65,20 @@ $req = ['id' => $id, 'user' => $user, 'type' => $type, 'date' => $date];
 if ($type === 'database') {
     $req['db'] = $db;
 }
-file_put_contents("$queueDir/$id.json", json_encode($req));
+
+// The queue is a shared drop box (mode 1733), so every account can write
+// into it. Create the request exclusively and lock it down before a byte
+// goes in, or an account that guessed the filename could read whose
+// account and which database somebody else is restoring. Root, which is
+// what bin/restore-worker.sh runs as, reads it regardless of mode.
+$path = "$queueDir/$id.json";
+$fh = @fopen($path, 'x');
+if ($fh === false) {
+    echo json_encode(['ok' => false, 'error' => 'Could not queue the request. Please try again.']);
+    exit;
+}
+@chmod($path, 0600);
+fwrite($fh, json_encode($req));
+fclose($fh);
 
 echo json_encode(['ok' => true, 'id' => $id]);

@@ -28,6 +28,7 @@ FILES=(
   bin/backup-all.sh
   bin/backup-user.sh
   bin/deploy.sh
+  bin/publish-manifest.sh
   bin/restore-worker.sh
   bin/retention-cleanup.sh
   bin/s3-lib.sh
@@ -38,7 +39,10 @@ FILES=(
   etc/skyserver-backup.conf.example
   plugin/action.live.php
   plugin/index.live.php
+  plugin/liveapi.php
+  plugin/manifest.php
   plugin/skyserver_backup.conf
+  plugin/skyserver_backup.png
   plugin/status.live.php
   scripts/uninstall.sh
   whm-plugin/index.cgi

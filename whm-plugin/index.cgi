@@ -189,6 +189,16 @@ function run_state(): ?array {
     }
     $total = count($data['accounts']);
     $done  = count($data['done'] ?? []);
+
+    // Keyed by account so account_rows() can attach each reason to its row.
+    $reasons = [];
+    foreach (($data['failed'] ?? []) as $f) {
+        if (is_array($f) && isset($f['user'])) {
+            $reasons[$f['user']] = (string) ($f['reason'] ?? '');
+        } elseif (is_string($f)) {
+            $reasons[$f] = '';   // written by a version before reasons were kept
+        }
+    }
     return [
         'date'      => $data['date'] ?? null,
         'status'    => $data['status'] ?? 'unknown',
@@ -198,6 +208,7 @@ function run_state(): ?array {
         'total'     => $total,
         'done'      => $done,
         'failed'    => count($data['failed'] ?? []),
+        'reasons'   => $reasons,
         'remaining' => max(0, $total - $done),
         // Only worth offering when there is something left of today's run.
         'resumable' => ($data['date'] ?? '') === date('Y-m-d')
@@ -213,11 +224,24 @@ function account_backups(string $user): array {
 }
 
 function account_rows(): array {
+    $run     = run_state();
+    $reasons = $run['reasons'] ?? [];
+    $today   = date('Y-m-d');
+
     $rows = [];
     foreach (whm_accounts() as $user) {
         $data = account_backups($user);
         $latest = $data[0] ?? null;
+
+        // A failure only still counts if the account has no backup from
+        // today. Retrying it by hand updates the manifest, so the row clears
+        // itself rather than needing the run's bookkeeping to be corrected.
+        $failed = array_key_exists($user, $reasons)
+                  && ($latest['date'] ?? null) !== $today;
+
         $rows[] = [
+            'failed' => $failed,
+            'reason' => $failed ? $reasons[$user] : null,
             'user' => $user,
             'last_date' => $latest['date'] ?? null,
             'last_size' => $latest['full_size'] ?? null,
@@ -567,6 +591,7 @@ ob_start();
   var $        = function (id) { return document.getElementById(id); };
   var pollTimer = null;
   var accountFilter = '';
+  var failedOnly = false;
   var updateInfo = null;
 
   // The shared runtime (icons, toasts, the modal, the JSON helper, the
@@ -678,7 +703,8 @@ ob_start();
       { ok: t.unprotected.length === 0, good: 'Every account has at least one backup',
         bad: t.unprotected.length + ' account' + (t.unprotected.length === 1 ? ' has' : 's have') +
              ' no backup yet: ' + esc(t.unprotected.slice(0, 6).join(', ')) +
-             (t.unprotected.length > 6 ? ' and ' + (t.unprotected.length - 6) + ' more' : '') },
+             (t.unprotected.length > 6 ? ' and ' + (t.unprotected.length - 6) + ' more' : '') +
+             ' — <a href="#" data-goto="accounts">see the Accounts tab</a>' },
       { ok: !s.aborted && s.attempted > 0 && s.fail === 0,
         good: 'Last run finished with no failures',
         bad: s.aborted
@@ -766,12 +792,16 @@ ob_start();
   }
 
   function renderAccounts() {
+    var failedCount = STATE.accounts.filter(function (r) { return r.failed; }).length;
+
     var rows = STATE.accounts.filter(function (r) {
+      if (failedOnly && !r.failed) return false;
       return !accountFilter || r.user.toLowerCase().indexOf(accountFilter) !== -1;
     });
 
     var body = rows.length ? '<div class="tbl-scroll"><table><thead><tr>' +
-        '<th>Account</th><th>Last backup</th><th>Size</th><th>Databases</th><th>Kept</th><th>Status</th><th class="right">Actions</th>' +
+        '<th>Account</th><th>Last backup</th><th>Size</th><th>Databases</th><th>Kept</th>' +
+        '<th>Status</th><th>Last result</th><th class="right">Actions</th>' +
       '</tr></thead><tbody>' +
       rows.map(function (r) {
         var d = daysSince(r.last_date);
@@ -779,6 +809,15 @@ ob_start();
                  : d <= 1 ? '<span class="pill pill-ok">current</span>'
                  : d <= 3 ? '<span class="pill pill-warn">' + d + ' days old</span>'
                  : '<span class="pill pill-bad">' + d + ' days old</span>';
+
+        // The reason is the point of the column: a name on a failed list is
+        // not something anyone can act on, "no space on /root" is.
+        var result = r.failed
+          ? '<span class="pill pill-bad">failed</span>' +
+            (r.reason ? '<div class="dim" style="font-size:12px; white-space:normal; ' +
+                        'max-width:420px; margin-top:4px">' + esc(r.reason) + '</div>' : '')
+          : '<span class="dim">—</span>';
+
         return '<tr>' +
           '<td><div class="who"><span class="avatar">' + esc(initials(r.user)) + '</span><b>' + esc(r.user) + '</b></div></td>' +
           '<td class="nowrap mono">' + esc(r.last_date || '—') + '</td>' +
@@ -786,26 +825,44 @@ ob_start();
           '<td>' + (r.db_count ? '<span class="chip">' + r.db_count + ' db</span>' : '<span class="dim">none</span>') + '</td>' +
           '<td class="mono">' + r.total_backups + '</td>' +
           '<td>' + pill + '</td>' +
+          '<td>' + result + '</td>' +
           '<td class="right nowrap">' +
-            '<button class="btn btn-sm" data-act="backup-user" data-user="' + esc(r.user) + '"' +
-              (STATE.running ? ' disabled title="A backup run is already in progress"' : '') + '>Back up</button> ' +
+            '<button class="btn btn-sm ' + (r.failed ? 'btn-primary' : '') + '" data-act="backup-user" ' +
+              'data-user="' + esc(r.user) + '"' +
+              (STATE.running ? ' disabled title="A backup run is already in progress"' : '') + '>' +
+              (r.failed ? 'Retry' : 'Back up') + '</button> ' +
             '<button class="btn btn-sm" data-act="restore" data-user="' + esc(r.user) + '"' +
               (r.total_backups ? '' : ' disabled title="No backup to restore"') + '>Restore</button>' +
           '</td>' +
         '</tr>';
       }).join('') + '</tbody></table></div>'
-      : emptyState('users', accountFilter ? 'No account matches "' + accountFilter + '"' : 'No cPanel accounts found',
-          accountFilter ? 'Clear the search to see them all.' : 'whmapi1 listaccts returned nothing on this server.');
+      : emptyState('users',
+          failedOnly ? 'No account failed its last backup' :
+            (accountFilter ? 'No account matches "' + accountFilter + '"' : 'No cPanel accounts found'),
+          failedOnly ? 'Everything that ran has a backup.' :
+            (accountFilter ? 'Clear the search to see them all.'
+                           : 'whmapi1 listaccts returned nothing on this server.'));
 
     $('p-accounts').innerHTML =
       '<div class="card">' +
         '<header><div class="grow"><h2>Accounts</h2>' +
           '<div class="hint">Every cPanel account on this server and the state of its latest backup.</div></div>' +
+          (failedCount
+            ? '<button class="btn btn-sm" id="sky-failed-only" ' +
+              (failedOnly ? 'style="background:var(--bad);border-color:var(--bad);color:#fff"' : '') + '>' +
+              (failedOnly ? 'Showing failed only (' + failedCount + ') — show all'
+                          : 'Show only failed (' + failedCount + ')') + '</button>'
+            : '') +
           '<div class="field search" style="margin:0">' + svg('search') +
             '<input type="search" id="sky-acct-search" placeholder="Filter accounts…" value="' + esc(accountFilter) + '">' +
           '</div>' +
         '</header>' + body +
       '</div>';
+
+    var only = $('sky-failed-only');
+    if (only) {
+      only.addEventListener('click', function () { failedOnly = !failedOnly; renderAccounts(); });
+    }
 
     var box = $('sky-acct-search');
     if (box) {

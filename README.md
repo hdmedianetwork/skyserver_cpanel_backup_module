@@ -224,6 +224,21 @@ tab says how far it got and offers **Resume (N left)** beside **Run full
 backup**. While a run is going the same state drives a live *90 of 187, now
 on sharmaho* progress bar.
 
+### Which accounts failed, and why
+
+A name on a failed list is not something anyone can act on. `no space left
+on /root` is.
+
+Every run captures each account's own output separately as well as appending
+it to the log, and keeps the line that looks like the actual error in
+`run-state.json` next to the account it belongs to. The Accounts tab has a
+**Last result** column carrying it, a **Show only failed (N)** filter, and a
+**Retry** button on each failed row that backs up that one account.
+
+A failure stops counting once the account has a backup from today, so
+retrying one by hand clears its own row — the display is derived from what
+is actually in S3 rather than from bookkeeping that could be left stale.
+
 ### WHM admin dashboard
 
 A single page that never reloads. PHP renders the shell once with a snapshot

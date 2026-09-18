@@ -58,6 +58,22 @@ json_array() { # items...
   printf '%s\n' "$@" | jq -R . | jq -s .
 }
 
+# Failures carry the reason with them. The account's own output goes to the
+# log as it always did, but a name in a list is not something an
+# administrator can act on — "which one, and why" is, and it is what decides
+# whether to retry the account or go and fix something first.
+FAILED_REASONS=()
+failed_json() {
+  if [ "${#FAILED_USERS[@]}" -eq 0 ]; then echo '[]'; return; fi
+  local i out='[]'
+  for i in "${!FAILED_USERS[@]}"; do
+    out="$(jq -c --argjson a "$out" --arg u "${FAILED_USERS[$i]}" \
+             --arg r "${FAILED_REASONS[$i]:-}" \
+             -n '$a + [{user:$u, reason:$r}]' 2>/dev/null || echo "$out")"
+  done
+  echo "$out"
+}
+
 # Written after every account, so an interruption at any point leaves a
 # complete picture of what is already in S3 and what is not.
 write_run_state() { # <status>
@@ -65,7 +81,7 @@ write_run_state() { # <status>
         --arg started "$STARTED_AT" --arg ts "$(date -Iseconds)" \
         --argjson accounts "$(json_array ${ALL_ACCOUNTS[@]+"${ALL_ACCOUNTS[@]}"})" \
         --argjson done "$(json_array ${DONE_USERS[@]+"${DONE_USERS[@]}"})" \
-        --argjson failed "$(json_array ${FAILED_USERS[@]+"${FAILED_USERS[@]}"})" \
+        --argjson failed "$(failed_json)" \
     '{date:$date, status:$status, current:$current, started_at:$started,
       updated_at:$ts, accounts:$accounts, done:$done, failed:$failed}' \
     > "$STATE_FILE.tmp" 2>/dev/null && mv "$STATE_FILE.tmp" "$STATE_FILE" || return 0
@@ -183,20 +199,30 @@ for USER in $ACCOUNTS; do
   # behind — inherited the run's lock. One orphaned child was then enough to
   # make every later run exit with "another backup run is already in
   # progress", for good.
+  # Kept separately as well as appended to the log, so the reason can be
+  # read back out of this account's own output rather than guessed at from a
+  # log that every other account is writing to too.
+  ACCT_OUT="$(mktemp)"
   if timeout --foreground --kill-after=60s "${ACCOUNT_TIMEOUT_MIN}m" \
-       "$SCRIPT_DIR/backup-user.sh" "$USER" >> "$LOG" 2>&1 200>&-; then
+       "$SCRIPT_DIR/backup-user.sh" "$USER" > "$ACCT_OUT" 2>&1 200>&-; then
+    cat "$ACCT_OUT" >> "$LOG"
     echo "[OK] $USER (took $(( (SECONDS - STARTED) / 60 ))m)" >> "$LOG"
     DONE_USERS+=("$USER")
   else
     RC=$?
+    cat "$ACCT_OUT" >> "$LOG"
     if [ "$RC" = "124" ] || [ "$RC" = "137" ]; then
-      echo "[FAIL] $USER — gave up after ${ACCOUNT_TIMEOUT_MIN} minutes" >> "$LOG"
+      REASON="gave up after ${ACCOUNT_TIMEOUT_MIN} minutes — the account may need a longer limit"
+      echo "[FAIL] $USER — $REASON" >> "$LOG"
       TIMED_OUT+=("$USER")
     else
-      echo "[FAIL] $USER (after $(( (SECONDS - STARTED) / 60 ))m)" >> "$LOG"
+      REASON="$(sky_failure_reason "$ACCT_OUT")"
+      echo "[FAIL] $USER (after $(( (SECONDS - STARTED) / 60 ))m): $REASON" >> "$LOG"
     fi
     FAILED_USERS+=("$USER")
+    FAILED_REASONS+=("$REASON")
   fi
+  rm -f "$ACCT_OUT"
   CURRENT_USER=""
   write_run_state running
 done

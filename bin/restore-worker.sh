@@ -82,25 +82,6 @@ write_running() { # <id> <user> <step> <of> <message> [percent] [detail]
   own_status "$1" "$2"
 }
 
-# The first line of a log that looks like the actual error, for showing to
-# the person waiting. Falls back to the last non-empty line, which is where
-# a failing script usually leaves its complaint.
-failure_reason() { # <logfile>
-  local line=""
-  [ -r "$1" ] || { echo "no output was produced"; return; }
-
-  line="$(grep -aiE '\b(error|failed|fatal|denied|refused|cannot|unable|no such|not found|exists)\b' "$1" \
-          | grep -avE '^\s*$' | head -n1 || true)"
-  if [ -z "$line" ]; then
-    line="$(grep -av '^\s*$' "$1" | tail -n1 || true)"
-  fi
-  [ -n "$line" ] || line="no output was produced"
-
-  # One tidy line: no control characters, and short enough to sit in a table
-  # cell without pushing everything else off the screen.
-  printf '%s' "$line" | tr -d '\r' | tr '\t' ' ' | cut -c1-180
-}
-
 # /scripts/restorepkg is built for restoring an account that is gone, and
 # refuses when the account is still there. Putting a backup back over a live
 # account is exactly what this feature does — and what the customer confirmed
@@ -289,7 +270,7 @@ for REQ in "$QUEUE_DIR"/*.json; do
     if ! fetch_with_progress "$ID" "$USER" "backups/${USER}/${DATE}/full-account.tar.gz" \
            "$TARBALL" 1 2 "Fetching your backup from storage"; then
       write_status "$ID" "$USER" "failed" \
-        "could not fetch your backup from storage — $(failure_reason "${TARBALL}.err")"
+        "could not fetch your backup from storage — $(sky_failure_reason "${TARBALL}.err")"
       keep_log "$ID" "${TARBALL}.err" "fetching the backup for $USER"
 
     elif write_running "$ID" "$USER" 2 2 "Restoring your account" "" "files, email, DNS and databases" \
@@ -297,7 +278,7 @@ for REQ in "$QUEUE_DIR"/*.json; do
       write_status "$ID" "$USER" "success"
 
     else
-      write_status "$ID" "$USER" "failed" "restore failed — $(failure_reason "$RLOG")"
+      write_status "$ID" "$USER" "failed" "restore failed — $(sky_failure_reason "$RLOG")"
       keep_log "$ID" "$RLOG" "restoring $USER"
     fi
 
@@ -319,7 +300,7 @@ for REQ in "$QUEUE_DIR"/*.json; do
     if ! fetch_with_progress "$ID" "$USER" "backups/${USER}/${DATE}/databases/${DB}.sql.gz" \
            "$DUMP" 1 2 "Fetching the database backup"; then
       write_status "$ID" "$USER" "failed" \
-        "could not fetch the database backup — $(failure_reason "${DUMP}.err")"
+        "could not fetch the database backup — $(sky_failure_reason "${DUMP}.err")"
       keep_log "$ID" "${DUMP}.err" "fetching $DB for $USER"
 
     elif write_running "$ID" "$USER" 2 2 "Importing the database" "" "$DB" \
@@ -327,7 +308,7 @@ for REQ in "$QUEUE_DIR"/*.json; do
       write_status "$ID" "$USER" "success"
 
     else
-      write_status "$ID" "$USER" "failed" "could not import $DB — $(failure_reason "$ILOG")"
+      write_status "$ID" "$USER" "failed" "could not import $DB — $(sky_failure_reason "$ILOG")"
       keep_log "$ID" "$ILOG" "importing $DB for $USER"
     fi
 

@@ -106,6 +106,26 @@ AWSCFG
   export AWS_CONFIG_FILE="$AWS_CFG_DIR/config"
 fi
 
+# The first line of a log that looks like the actual error, for showing to
+# the person waiting. Falls back to the last non-empty line, which is where
+# a failing script usually leaves its complaint.
+sky_failure_reason() { # <logfile>
+  local line=""
+  [ -r "$1" ] || { echo "no output was produced"; return; }
+
+  line="$(grep -aiE '\b(error|failed|fatal|denied|refused|cannot|unable|no such|not found|exists)\b' "$1" \
+          | grep -avE '^\s*$' | head -n1 || true)"
+  if [ -z "$line" ]; then
+    line="$(grep -av '^\s*$' "$1" | tail -n1 || true)"
+  fi
+  [ -n "$line" ] || line="no output was produced"
+
+  # One tidy line: our own log markers stripped (they are not part of the
+  # error), no control characters, and short enough to sit in a table cell
+  # without pushing everything else off the screen.
+  printf '%s' "$line" | sed -e 's/^\[[!*]\] *//' | tr -d '\r' | tr '\t' ' ' | cut -c1-180
+}
+
 USER_RESTORE_MARKER="/var/spool/skyserver-backup/user-restore-enabled"
 SKY_PROGRESS_DIR="/var/spool/skyserver-backup/progress"
 

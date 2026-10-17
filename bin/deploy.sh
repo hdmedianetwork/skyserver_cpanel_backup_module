@@ -57,6 +57,12 @@ else
   log "Existing config found at $CONF_FILE — leaving it untouched."
 fi
 
+# Manifests written before retention pruned them list every night ever
+# backed up. Trim them to RETENTION_DAYS now rather than at the next
+# nightly run; nothing in S3 is touched.
+log "Trimming account manifests to the retention period..."
+"$INSTALL_DIR/bin/prune-manifests.sh" || true
+
 log "Installing cron jobs..."
 sed "s#__INSTALL_DIR__#$INSTALL_DIR#g" "$INSTALL_DIR/etc/cron/skyserver-backup" > "$CRON_FILE"
 chmod 644 "$CRON_FILE"

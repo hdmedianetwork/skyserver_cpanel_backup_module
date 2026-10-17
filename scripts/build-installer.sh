@@ -28,6 +28,7 @@ FILES=(
   bin/backup-all.sh
   bin/backup-user.sh
   bin/deploy.sh
+  bin/prune-manifests.sh
   bin/publish-manifest.sh
   bin/restore-worker.sh
   bin/retention-cleanup.sh

@@ -5,11 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 [Semantic Versioning](https://semver.org/). Fixes for problems seen on live servers are explained
 in more depth in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
-## Unreleased
+## 0.9.4 · 2026-10-17
 ### Fixed
 - Retention now prunes each account's manifest as well as S3. The **Kept** column and the restore
   lists used to grow by one backup a night forever, listing days the bucket no longer had, so an
-  account showed 27 kept with retention set to 7. The next nightly run corrects existing manifests.
+  account showed 27 kept with retention set to 7. Updating the module corrects existing manifests
+  straight away.
 
 ## 0.9.3 · 2026-09-18
 ### Fixed

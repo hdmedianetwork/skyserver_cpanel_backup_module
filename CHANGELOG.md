@@ -5,6 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 [Semantic Versioning](https://semver.org/). Fixes for problems seen on live servers are explained
 in more depth in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
+## 0.10.1 · 2026-11-12
+### Fixed
+- **Find terminated accounts** in WHM failed with *whmapi1 listaccts did not succeed* and archived
+  nothing. whmapi1 started from the WHM page inherited the page's CGI environment, and its stderr
+  was read together with its reply, so the reply could not be parsed. Every whmapi1 call these
+  scripts make now runs with a clean environment and reads stdout only.
+- After **Install update**, the page now reloads so the new version's tabs appear.
+
 ## 0.10.0 · 2026-11-12
 ### Added
 - **Restore terminated accounts.** When an account is terminated its backups are moved out of the

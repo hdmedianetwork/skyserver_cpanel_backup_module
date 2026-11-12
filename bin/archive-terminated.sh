@@ -71,9 +71,9 @@ fi
 # is refused as well.
 live_accounts() {
   local out
-  out="$(whmapi1 listaccts --output=jsonpretty 2>&1)" || { printf '%s\n' "$out" >&2; return 2; }
+  out="$(sky_whmapi listaccts)" || return 2
   if [ "$(printf '%s' "$out" | jq -r '.metadata.result // empty' 2>/dev/null)" != "1" ]; then
-    echo "[!] whmapi1 listaccts did not succeed: $(printf '%s' "$out" | jq -r '.metadata.reason // "unparseable reply"' 2>/dev/null)" >&2
+    echo "[!] whmapi1 listaccts did not succeed: $(printf '%s' "$out" | jq -r '.metadata.reason // "unparseable reply"' 2>/dev/null || echo "unparseable reply: $(printf '%s' "$out" | head -c 200)")" >&2
     return 2
   fi
   printf '%s' "$out" | jq -r '.data.acct[]?.user' 2>/dev/null

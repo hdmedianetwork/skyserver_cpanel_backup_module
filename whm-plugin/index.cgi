@@ -614,7 +614,11 @@ if ($isApi) {
                       'message' => "Recreating $target from its $date backup — it starts within a minute."]);
 
         case 'scan_terminated':
-            shell_exec('nohup ' . escapeshellarg(INSTALL_DIR . '/bin/archive-terminated.sh') . ' --scan >> '
+            // A clean environment: whmapi1 started from inside this CGI
+            // otherwise sees cpsrvd's request variables and answers as if it
+            // were part of the page, which the script cannot parse.
+            shell_exec('env -i PATH=/usr/local/cpanel/bin:/usr/local/cpanel/scripts:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root '
+                . 'nohup ' . escapeshellarg(INSTALL_DIR . '/bin/archive-terminated.sh') . ' --scan >> '
                 . escapeshellarg(LOG_FILE) . ' 2>&1 &');
             json_out(['ok' => true, 'message' => 'Looking for backups of accounts that are no longer on '
                 . 'this server — watch the Activity Log; refresh this tab when it finishes.']);
@@ -1613,14 +1617,16 @@ ob_start();
       tone: ok ? 'good' : 'danger',
       title: ok ? 'Updated to v' + r.version : 'Update did not complete',
       single: true,
-      confirmLabel: 'Done',
+      // The tabs and panels are drawn once, when the page loads, so a new
+      // version's tabs only appear after a reload.
+      confirmLabel: ok ? 'Reload page' : 'Done',
       body: '<p>' + (ok
           ? 'The module was pulled from GitHub and redeployed. Backups keep running on their existing schedule.'
           : 'The update stopped before finishing. Nothing was removed — the previous version is still installed.') +
         '</p>' + steps +
         '<details class="raw"><summary>Show raw output</summary>' +
           '<pre class="console">' + esc(r.raw || '(no output)') + '</pre></details>'
-    });
+    }).then(function () { if (ok) window.location.reload(); });
 
     toast(ok ? 'ok' : 'bad', res.message);
   }

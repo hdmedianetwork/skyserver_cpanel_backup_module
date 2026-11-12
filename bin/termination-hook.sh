@@ -51,7 +51,8 @@ chmod 700 "$TERMINATED_DIR" 2>/dev/null || true
 case "$STAGE" in
   pre)
     # What the account was, while WHM can still tell us.
-    SUMMARY="$(whmapi1 accountsummary user="$USER" --output=json 2>/dev/null || true)"
+    SUMMARY="$(env -i PATH="$PATH" HOME=/root LANG=C whmapi1 accountsummary user="$USER" --output=json 2>/dev/null \
+               | sed -n '/^[[:space:]]*{/,$p' || true)"
     PENDING="$TERMINATED_DIR/pending-${USER}.json"
     printf '%s' "$SUMMARY" | jq --arg u "$USER" --arg ts "$(date -Iseconds)" '
         (.data.acct[0] // {}) as $a

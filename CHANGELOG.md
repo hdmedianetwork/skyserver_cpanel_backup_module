@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 [Semantic Versioning](https://semver.org/). Fixes for problems seen on live servers are explained
 in more depth in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
+## 0.10.0 · 2026-11-12
+### Added
+- **Restore terminated accounts.** When an account is terminated its backups are moved out of the
+  nightly retention to `terminated/<user>/<stamp>/` and kept for `TERMINATED_RETENTION_DAYS`
+  (default 90). A new **Terminated** tab in WHM lists them and recreates the account from any
+  stored day with `/scripts/restorepkg`.
+- A final backup is taken as an account is terminated (`TERMINATION_FINAL_BACKUP`, on by default),
+  through a non-blocking `Accounts::Remove` hook.
+- Accounts terminated before this version are found and archived on update and every night.
+
+### Fixed
+- A terminated account's last backups were deleted `RETENTION_DAYS` after termination.
+- A new account created with a terminated account's username could see, download and restore the
+  previous customer's backups.
+- The restore worker trusted the `user` and `source` fields of a request file. A file written by an
+  account is now honoured only for that account, and only root can queue an admin request.
+
 ## 0.9.4 · 2026-10-17
 ### Fixed
 - Retention now prunes each account's manifest as well as S3. The **Kept** column and the restore

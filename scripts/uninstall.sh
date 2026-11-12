@@ -15,6 +15,12 @@ WHM_CGI_DIR="/usr/local/cpanel/whostmgr/docroot/cgi/skyserver_backup"
 echo "[skyserver-backup] Removing cron job..."
 rm -f "$CRON_FILE"
 
+echo "[skyserver-backup] Removing the account termination hook..."
+for STAGE in pre post; do
+  /usr/local/cpanel/bin/manage_hooks delete script "$INSTALL_DIR/bin/termination-hook.sh" \
+    --manual --category Whostmgr --event Accounts::Remove --stage "$STAGE" >/dev/null 2>&1 || true
+done
+
 echo "[skyserver-backup] Removing cPanel end-user plugin..."
 rm -f "$DYNAMICUI_DIR/dynamicui_skyserver_backup.conf"
 for THEME_DIR in "$FRONTEND_BASE"/*/; do
@@ -40,4 +46,5 @@ done
 echo "[skyserver-backup] Removing installed scripts at $INSTALL_DIR..."
 rm -rf "$INSTALL_DIR"
 
-echo "[skyserver-backup] Done. Config (/etc/skyserver-backup.conf) and S3 backups were left in place."
+echo "[skyserver-backup] Done. Config (/etc/skyserver-backup.conf) and S3 backups — including the"
+echo "[skyserver-backup] archives of terminated accounts under terminated/ — were left in place."

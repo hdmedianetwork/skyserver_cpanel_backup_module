@@ -20,6 +20,18 @@ AWS_SECRET_ACCESS_KEY="REPLACE_ME"
 # Backups older than this many days are deleted from S3 automatically.
 RETENTION_DAYS=7
 
+# When an account is terminated its backups are moved out of the way of the
+# setting above, into terminated/<user>/<date-time>/ in the bucket, and kept
+# this many days so the account can be recreated from them in WHM »
+# SkyServer Backup Manager » Terminated. 0 keeps them until you delete them.
+# A new account created with the same username never sees them.
+TERMINATED_RETENTION_DAYS=90
+
+# 1 backs an account up one last time as it is terminated (skipped when it
+# already has a backup from today). Terminating waits for that backup, up to
+# ACCOUNT_TIMEOUT_MIN. 0 keeps only the backups it already had.
+TERMINATION_FINAL_BACKUP=1
+
 # Where account tarballs are staged before being uploaded. Point this at a
 # partition with room for your largest account.
 BACKUP_WORK_DIR="/root"

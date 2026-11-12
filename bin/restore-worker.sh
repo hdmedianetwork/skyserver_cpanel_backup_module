@@ -159,6 +159,74 @@ fetch_with_progress() { # <id> <user> <s3_key> <dest> <step> <of> <message>
   wait "$dl_pid"
 }
 
+TERMINATED_DIR="/var/spool/skyserver-backup/terminated"
+
+# Puts a terminated account back from its archive under
+# terminated/<user>/<stamp>/<date>/. restorepkg creates the account — user,
+# files, mail, DNS zones, databases — exactly as /scripts/pkgacct packed it.
+recreate_terminated() { # <id> <user> <request file>
+  local id="$1" user="$2" req="$3" stamp date record why rc workdir tarball rlog
+  stamp="$(jq -r '.stamp // ""' "$req")"
+  date="$(jq -r '.date // ""' "$req")"
+
+  if ! [[ "$stamp" =~ ^[0-9]{8}T[0-9]{6}$ ]] || ! [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    write_status "$id" "$user" "failed" "this request does not name a valid archived backup"
+    rm -f "$req"
+    return
+  fi
+  record="$TERMINATED_DIR/${user}--${stamp}.json"
+  if [ ! -r "$record" ] || ! jq -e --arg d "$date" '.backups | map(select(.date == $d)) | length > 0' \
+       "$record" >/dev/null 2>&1; then
+    write_status "$id" "$user" "failed" "that archived backup is not on record — it may have expired"
+    rm -f "$req"
+    return
+  fi
+
+  # The reverse of the usual check: restorepkg would otherwise be asked to
+  # put an old account over a live one that merely has the same name.
+  set +e
+  why="$(account_exists "$user")"
+  rc=$?
+  set -e
+  if [ "$rc" = "2" ]; then
+    write_status "$id" "$user" "failed" "could not check the server's accounts — retrying"
+    log "could not verify $user for request $id: $why"
+    return   # stays queued
+  fi
+  if [ "$rc" = "0" ]; then
+    write_status "$id" "$user" "failed" \
+      "an account named $user exists on this server now — terminate or rename it first"
+    rm -f "$req"
+    return
+  fi
+
+  workdir="$(mktemp -d "/root/skyrestore-${user}-XXXXXX")"
+  tarball="$workdir/cpmove-${user}.tar.gz"
+  rlog="$workdir/restore.log"
+
+  if ! fetch_with_progress "$id" "$user" "terminated/${user}/${stamp}/${date}/full-account.tar.gz" \
+         "$tarball" 1 2 "Fetching the archived backup from storage"; then
+    write_status "$id" "$user" "failed" \
+      "could not fetch the archived backup — $(sky_failure_reason "${tarball}.err")"
+    keep_log "$id" "${tarball}.err" "fetching the archived backup of $user"
+
+  elif write_running "$id" "$user" 2 2 "Recreating the account" "" "files, email, DNS and databases" \
+       && /scripts/restorepkg "$tarball" >"$rlog" 2>&1; then
+    write_status "$id" "$user" "success"
+    log "recreated terminated account $user from its $date backup (archive $stamp)"
+    jq --arg ts "$(date -Iseconds)" --arg d "$date" \
+       '.status = "restored" | .restored_at = $ts | .restored_from = $d' \
+       "$record" > "$record.tmp" && mv "$record.tmp" "$record" && chmod 600 "$record"
+
+  else
+    write_status "$id" "$user" "failed" "could not recreate the account — $(sky_failure_reason "$rlog")"
+    keep_log "$id" "$rlog" "recreating $user"
+  fi
+
+  rm -rf "$workdir"
+  rm -f "$req"
+}
+
 write_download_status() { # <id> <user> <url>
   jq -n --arg id "$1" --arg user "$2" --arg url "$3" --arg ts "$(date -Iseconds)" \
     '{id: $id, user: $user, status: "success", download_url: $url, updated_at: $ts}' \
@@ -210,7 +278,35 @@ for REQ in "$QUEUE_DIR"/*.json; do
     continue
   fi
 
+  # Who wrote the request. The queue is a drop box every account can write
+  # into, so the "user" and "source" fields inside a file are only claims:
+  # a file an account wrote is only ever honoured for that same account,
+  # and only root — the WHM panel — can write an admin request.
+  REQ_UID="$(stat -c %u "$REQ" 2>/dev/null || echo "")"
+  if [ "$REQ_UID" != "0" ]; then
+    REQ_OWNER="$(getent passwd "$REQ_UID" 2>/dev/null | cut -d: -f1 || true)"
+    if [ -z "$REQ_OWNER" ] || [ "$REQ_OWNER" != "$USER" ]; then
+      write_status "$ID" "${REQ_OWNER:-$USER}" "failed" "this request was not made by that account"
+      log "request $ID names $USER but was written by uid ${REQ_UID:-?} (${REQ_OWNER:-unknown}) — dropping it"
+      rm -f "$REQ"
+      continue
+    fi
+    SOURCE="user"
+  fi
+
   write_status "$ID" "$USER" "running"
+
+  # Recreating a terminated account is the one restore that wants the
+  # account *not* to exist, and only the administrator can ask for it.
+  if [ "$TYPE" = "recreate" ]; then
+    if [ "$SOURCE" != "admin" ]; then
+      write_status "$ID" "$USER" "failed" "only the server administrator can recreate an account"
+      rm -f "$REQ"
+      continue
+    fi
+    recreate_terminated "$ID" "$USER" "$REQ"
+    continue
+  fi
 
   # Re-check here rather than trusting the plugin's own check: this is the
   # only place that actually touches live data. Downloads only read a

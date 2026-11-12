@@ -19,6 +19,30 @@ done
 unset _sky_dir
 export PATH
 
+# whmapi1's JSON reply, and nothing else, on stdout.
+#
+# Two things used to get mixed into it. Started from the WHM panel, these
+# scripts inherit the CGI environment cpsrvd gave the page, and whmapi1 run
+# inside that behaves like part of a web request rather than a command; and
+# its warnings went into the same capture as the reply when stderr was
+# folded in. Either one leaves jq looking at something that is not JSON,
+# and "could not parse" reads exactly like "WHM said no". So it runs with a
+# clean environment, its stderr is kept apart (and printed if it fails), and
+# anything before the opening brace is dropped.
+sky_whmapi() { # <function> [key=value...]
+  local out err rc
+  err="$(mktemp)"
+  out="$(env -i PATH="$PATH" HOME=/root LANG=C whmapi1 "$@" --output=json 2>"$err")"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    cat "$err" >&2
+    rm -f "$err"
+    return "$rc"
+  fi
+  rm -f "$err"
+  printf '%s\n' "$out" | sed -n '/^[[:space:]]*{/,$p'
+}
+
 # Checked up front so a run fails with the reason in hand, rather than dying
 # halfway through on a command substitution that set -e turns into silence.
 sky_require_tools() { # <command>...

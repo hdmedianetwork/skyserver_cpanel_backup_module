@@ -112,7 +112,7 @@ run_restorepkg() { # <tarball> <logfile>
 # reported to the customer as "unknown user" and their request was deleted.
 account_exists() { # <user>
   local user="$1" out result
-  if ! out="$(whmapi1 listaccts --output=jsonpretty 2>&1)"; then
+  if ! out="$(sky_whmapi listaccts 2>&1)"; then
     printf '%s' "$out" | tr '\n' ' '
     return 2
   fi

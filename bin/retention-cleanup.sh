@@ -26,7 +26,7 @@ echo "[*] Archiving backups of accounts that are no longer on this server..."
 # expired, until the next run moves it. When WHM cannot say which accounts
 # exist, nothing under backups/ is expired at all this run.
 LIVE=""
-if OUT="$(whmapi1 listaccts --output=jsonpretty 2>/dev/null)" \
+if OUT="$(sky_whmapi listaccts 2>/dev/null)" \
    && [ "$(printf '%s' "$OUT" | jq -r '.metadata.result // empty' 2>/dev/null)" = "1" ]; then
   LIVE="$(printf '%s' "$OUT" | jq -r '.data.acct[]?.user' 2>/dev/null || true)"
 fi

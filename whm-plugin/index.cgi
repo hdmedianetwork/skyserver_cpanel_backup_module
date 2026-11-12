@@ -63,6 +63,7 @@ const LOCK_FILE       = '/var/spool/skyserver-backup/backup.lock';
 const USER_RESTORE_MARKER = '/var/spool/skyserver-backup/user-restore-enabled';
 const QUEUE_DIR       = '/var/spool/skyserver-backup/restore-requests';
 const RUN_STATE_FILE  = '/var/spool/skyserver-backup/run-state.json';
+const TERMINATED_DIR  = '/var/spool/skyserver-backup/terminated';
 const LOGO_URL        = 'https://ik.imagekit.io/hdmn/skybackupmanager.png';
 
 // The stylesheet and the shared front-end runtime, which the end-user
@@ -122,7 +123,7 @@ function public_conf(array $conf): array {
     $keys = ['S3_BUCKET', 'AWS_DEFAULT_REGION', 'S3_ENDPOINT_URL', 'S3_ADDRESSING_STYLE',
              'RETENTION_DAYS', 'ALERT_EMAIL', 'BACKUP_WORK_DIR', 'DISK_SAFETY_MARGIN_MB',
              'ACCOUNT_TIMEOUT_MIN', 'BACKUP_WORK_DIR_FALLBACK', 'MYSQL_AUTO_REPAIR',
-             'ENABLE_USER_RESTORE'];
+             'ENABLE_USER_RESTORE', 'TERMINATED_RETENTION_DAYS', 'TERMINATION_FINAL_BACKUP'];
     $out = [];
     foreach ($keys as $k) {
         $out[$k] = (string) ($conf[$k] ?? '');
@@ -139,6 +140,45 @@ function whm_accounts(): array {
     $out = shell_exec('whmapi1 listaccts --output=jsonpretty 2>/dev/null');
     preg_match_all('/"user"\s*:\s*"([^"]+)"/', $out ?? '', $m);
     return $m[1] ?? [];
+}
+
+/**
+ * Accounts that were terminated, from the records bin/archive-terminated.sh
+ * keeps for each archive under terminated/<user>/<stamp>/ in the bucket.
+ * Newest termination first. One username can appear more than once: an
+ * account terminated, recreated and terminated again has two archives.
+ */
+function terminated_accounts(?array $live = null): array {
+    $live = $live ?? whm_accounts();
+    $days = (int) (read_conf()['TERMINATED_RETENTION_DAYS'] ?? 90);
+    $out = [];
+    foreach (glob(TERMINATED_DIR . '/*--*.json') ?: [] as $f) {
+        $r = json_decode((string) @file_get_contents($f), true);
+        if (!is_array($r) || empty($r['user']) || empty($r['stamp'])) continue;
+        if (!preg_match('/^[a-zA-Z0-9_]+$/', $r['user'])
+            || !preg_match('/^\d{8}T\d{6}$/', $r['stamp'])) continue;
+
+        $archived = DateTime::createFromFormat('Ymd\THis', $r['stamp'], new DateTimeZone('UTC'));
+        $expires = ($days > 0 && $archived)
+            ? $archived->modify("+$days days")->format('Y-m-d') : null;
+
+        $out[] = [
+            'user'          => $r['user'],
+            'stamp'         => $r['stamp'],
+            'status'        => (string) ($r['status'] ?? 'archived'),
+            'terminated_at' => $r['terminated_at'] ?? null,
+            'domain'        => $r['domain'] ?? null,
+            'owner'         => $r['owner'] ?? null,
+            'plan'          => $r['plan'] ?? null,
+            'restored_at'   => $r['restored_at'] ?? null,
+            'restored_from' => $r['restored_from'] ?? null,
+            'backups'       => array_values(array_filter($r['backups'] ?? [], 'is_array')),
+            'exists_now'    => in_array($r['user'], $live, true),
+            'expires'       => $expires,
+        ];
+    }
+    usort($out, fn($a, $b) => strcmp($b['stamp'], $a['stamp']));
+    return $out;
 }
 
 function latest_run_summary(): array {
@@ -438,6 +478,7 @@ function dashboard_state(): array {
             'bytes'       => $totalBytes,
         ],
         'run'          => run_state(),
+        'terminated'   => terminated_accounts(),
         'configured'   => ($conf['S3_BUCKET'] ?? '') !== '' && ($conf['S3_BUCKET'] ?? '') !== 'your-bucket-name',
         'server_time'  => date('c'),
     ];
@@ -458,7 +499,7 @@ if ($isApi) {
     // prefetch, a bookmarked URL, an image tag on another page — can never
     // kick off a backup or a restore.
     $mutating = ['run_now', 'resume_run', 'backup_user', 'admin_restore', 'save_config',
-                 'test_s3', 'update_apply'];
+                 'test_s3', 'update_apply', 'restore_terminated', 'scan_terminated'];
     if (in_array($apiAction, $mutating, true) && !$isPost) {
         http_response_code(405);
         json_out(['ok' => false, 'error' => 'This action requires POST.']);
@@ -541,6 +582,43 @@ if ($isApi) {
             json_out(['ok' => true, 'id' => $id,
                       'message' => "Restore of $what for $target queued — it starts within a minute."]);
 
+        case 'restore_terminated':
+            $target = preg_replace('/[^a-zA-Z0-9_]/', '', $_POST['user'] ?? '');
+            $stamp  = preg_replace('/[^0-9T]/', '', $_POST['stamp'] ?? '');
+            $date   = preg_replace('/[^0-9\-]/', '', $_POST['date'] ?? '');
+
+            $rec = null;
+            foreach (terminated_accounts() as $t) {
+                if ($t['user'] === $target && $t['stamp'] === $stamp) $rec = $t;
+            }
+            if (!$rec || !in_array($date, array_column($rec['backups'], 'date'), true)) {
+                json_out(['ok' => false, 'error' => 'That archived backup does not exist.']);
+            }
+            if ($rec['exists_now']) {
+                json_out(['ok' => false, 'error' => "An account named $target exists on this server now. "
+                    . 'Terminate or rename it first — recreating would put the old account over it.']);
+            }
+
+            $id  = uniqid('req_', true);
+            $req = ['id' => $id, 'user' => $target, 'type' => 'recreate', 'stamp' => $stamp,
+                    'date' => $date, 'source' => 'admin'];
+            $path = QUEUE_DIR . "/$id.json";
+            $fh = @fopen($path, 'x');
+            if ($fh === false) {
+                json_out(['ok' => false, 'error' => 'Could not queue the restore. Is the spool directory present?']);
+            }
+            @chmod($path, 0600);
+            fwrite($fh, json_encode($req));
+            fclose($fh);
+            json_out(['ok' => true, 'id' => $id,
+                      'message' => "Recreating $target from its $date backup — it starts within a minute."]);
+
+        case 'scan_terminated':
+            shell_exec('nohup ' . escapeshellarg(INSTALL_DIR . '/bin/archive-terminated.sh') . ' --scan >> '
+                . escapeshellarg(LOG_FILE) . ' 2>&1 &');
+            json_out(['ok' => true, 'message' => 'Looking for backups of accounts that are no longer on '
+                . 'this server — watch the Activity Log; refresh this tab when it finishes.']);
+
         case 'save_config':
             $updates = [
                 'S3_BUCKET' => $_POST['s3_bucket'] ?? null,
@@ -552,6 +630,9 @@ if ($isApi) {
                 'BACKUP_WORK_DIR_FALLBACK' => (($_POST['work_dir_fallback'] ?? '0') === '1') ? '1' : '0',
                 'MYSQL_AUTO_REPAIR' => (($_POST['mysql_auto_repair'] ?? '0') === '1') ? '1' : '0',
                 'ENABLE_USER_RESTORE' => (($_POST['user_restore'] ?? '0') === '1') ? '1' : '0',
+                'TERMINATED_RETENTION_DAYS' => isset($_POST['terminated_retention'])
+                    ? (string) max(0, (int) $_POST['terminated_retention']) : null,
+                'TERMINATION_FINAL_BACKUP' => (($_POST['final_backup'] ?? '1') === '0') ? '0' : '1',
                 'ALERT_EMAIL' => $_POST['alert_email'] ?? null,
                 'S3_ENDPOINT_URL' => normalize_endpoint($_POST['s3_endpoint'] ?? ''),
                 'S3_ADDRESSING_STYLE' => in_array($_POST['addressing_style'] ?? '', ['path', 'virtual'], true)
@@ -649,6 +730,7 @@ ob_start();
     <button class="tab" role="tab" data-tab="overview" data-icon="grid" aria-selected="true">Overview</button>
     <button class="tab" role="tab" data-tab="accounts" data-icon="users" aria-selected="false">Accounts <span class="count" id="c-accounts">0</span></button>
     <button class="tab" role="tab" data-tab="restores" data-icon="rotate" aria-selected="false">Restores <span class="count" id="c-jobs">0</span></button>
+    <button class="tab" role="tab" data-tab="terminated" data-icon="archive" aria-selected="false">Terminated <span class="count" id="c-terminated">0</span></button>
     <button class="tab" role="tab" data-tab="settings" data-icon="sliders" aria-selected="false">Settings</button>
     <button class="tab" role="tab" data-tab="logs" data-icon="terminal" aria-selected="false">Activity Log</button>
   </div>
@@ -656,6 +738,7 @@ ob_start();
   <div class="panel" id="p-overview"></div>
   <div class="panel" id="p-accounts" hidden></div>
   <div class="panel" id="p-restores" hidden></div>
+  <div class="panel" id="p-terminated" hidden></div>
   <div class="panel" id="p-settings" hidden></div>
   <div class="panel" id="p-logs" hidden></div>
 
@@ -733,6 +816,9 @@ ob_start();
 
     $('c-accounts').textContent = t.accounts;
     $('c-jobs').textContent = STATE.jobs.length;
+    $('c-terminated').textContent = (STATE.terminated || []).filter(function (t) {
+      return t.status !== 'restored' && !t.exists_now;
+    }).length;
   }
 
   function renderBanner() {
@@ -796,6 +882,12 @@ ob_start();
              ' no backup yet: ' + esc(t.unprotected.slice(0, 6).join(', ')) +
              (t.unprotected.length > 6 ? ' and ' + (t.unprotected.length - 6) + ' more' : '') +
              ' — <a href="#" data-goto="accounts">see the Accounts tab</a>' },
+      { ok: true, good: (function () {
+          var n = (STATE.terminated || []).filter(function (x) { return x.status === 'archived' && !x.exists_now; }).length;
+          return n ? n + ' terminated account' + (n === 1 ? '' : 's') + ' can be restored — ' +
+                     '<a href="#" data-goto="terminated">see the Terminated tab</a>'
+                   : 'No terminated accounts waiting in the archive';
+        })() },
       { ok: !s.aborted && s.attempted > 0 && s.fail === 0,
         good: 'Last run finished with no failures',
         bad: s.aborted
@@ -987,6 +1079,108 @@ ob_start();
       '</div>';
   }
 
+  function renderTerminated() {
+    var list = STATE.terminated || [];
+    var c = STATE.config;
+    var keep = parseInt(c.TERMINATED_RETENTION_DAYS || '90', 10);
+
+    var body = list.length ? '<div class="tbl-scroll"><table><thead><tr>' +
+        '<th>Account</th><th>Domain</th><th>Terminated</th><th>Backups</th><th>Latest</th>' +
+        '<th>Kept until</th><th>Status</th><th class="right">Actions</th>' +
+      '</tr></thead><tbody>' +
+      list.map(function (t) {
+        var latest = t.backups[0] || null;
+        var pill = t.status === 'restored'
+            ? '<span class="pill pill-ok">recreated</span>' +
+              (t.restored_at ? '<div class="dim" style="font-size:12px;margin-top:4px">from ' +
+                esc(t.restored_from || '?') + ', ' + esc(ago(t.restored_at)) + '</div>' : '')
+          : t.status === 'archiving' ? '<span class="pill pill-info pill-live">archiving</span>'
+          : t.exists_now ? '<span class="pill pill-warn">name in use</span>'
+          : '<span class="pill pill-none">archived</span>';
+        var can = t.backups.length && !t.exists_now && t.status !== 'archiving';
+        var why = t.exists_now ? 'An account with this name exists again — terminate or rename it first'
+                : (!t.backups.length ? 'No backup in this archive' : '');
+        return '<tr>' +
+          '<td><div class="who"><span class="avatar">' + esc(initials(t.user)) + '</span><b>' + esc(t.user) + '</b></div>' +
+            (t.owner && t.owner !== 'root' ? '<div class="dim" style="font-size:12px">reseller ' + esc(t.owner) + '</div>' : '') + '</td>' +
+          '<td class="mono">' + esc(t.domain || '—') + '</td>' +
+          '<td class="nowrap dim">' + esc(t.terminated_at ? String(t.terminated_at).slice(0, 10) : '—') + '</td>' +
+          '<td class="mono">' + t.backups.length + '</td>' +
+          '<td class="nowrap mono">' + (latest ? esc(latest.date) + ' <span class="dim">(' +
+            esc(latest.full_size || bytes(latest.full_size_bytes || 0)) + ')</span>' : '—') + '</td>' +
+          '<td class="nowrap mono">' + esc(t.expires || 'until deleted') + '</td>' +
+          '<td>' + pill + '</td>' +
+          '<td class="right nowrap"><button class="btn btn-sm ' + (can ? 'btn-primary' : '') + '" ' +
+            'data-act="recreate" data-user="' + esc(t.user) + '" data-stamp="' + esc(t.stamp) + '"' +
+            (can ? '' : ' disabled title="' + esc(why) + '"') + '>Restore account</button></td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>'
+      : emptyState('archive', 'No terminated accounts on record',
+          'When an account is terminated its backups move here instead of expiring with the nightly retention.');
+
+    $('p-terminated').innerHTML =
+      '<div class="card">' +
+        '<header><div class="grow"><h2>Terminated accounts</h2>' +
+          '<div class="hint">Backups of accounts that are no longer on this server, kept ' +
+            (keep > 0 ? keep + ' days after termination' : 'until you delete them') +
+            '. A new account with the same username never sees them.</div></div>' +
+          '<button class="btn btn-sm" data-act="scan-terminated" data-icon="search">Find terminated accounts</button>' +
+        '</header>' + body +
+      '</div>' +
+      '<div class="card"><div class="body"><div class="note">' + svg('info') +
+        '<div><b>Restore account</b> recreates the account — user, files, email, DNS and databases — ' +
+        'from the backup you pick, the same way WHM\'s <i>Restore a Full Backup/cpmove File</i> does. ' +
+        'It needs the username, and its domains, to be free on this server.</div></div></div></div>';
+  }
+
+  function openRecreate(user, stamp) {
+    var t = (STATE.terminated || []).filter(function (x) { return x.user === user && x.stamp === stamp; })[0];
+    if (!t || !t.backups.length) { toast('bad', 'That archive has no backup to restore.'); return; }
+
+    modal({
+      icon: 'rotate',
+      title: 'Restore terminated account',
+      confirmLabel: 'Continue',
+      body: '<p>Recreates <b>' + esc(user) + '</b>' + (t.domain ? ' (' + esc(t.domain) + ')' : '') +
+            ' on this server from one of its backups.</p>' +
+            '<div class="field" style="margin-top:14px"><label for="m-tdate">Backup date</label>' +
+            '<select id="m-tdate">' + t.backups.map(function (b) {
+              return '<option value="' + esc(b.date) + '">' + esc(b.date) + ' (' +
+                     esc(b.full_size || bytes(b.full_size_bytes || 0)) + ', ' +
+                     (b.databases || []).length + ' db)</option>';
+            }).join('') + '</select></div>',
+      collect: function (box) { return { date: box.querySelector('#m-tdate').value }; }
+    }).then(function (pick) {
+      if (!pick) return;
+      modal({
+        icon: 'alert',
+        title: 'Confirm restore',
+        confirmLabel: 'Yes, recreate ' + user,
+        body: '<p>This creates the account <b>' + esc(user) + '</b> again from its backup of <b>' +
+              esc(pick.date) + '</b>.</p><ul>' +
+              '<li>Files, email, DNS zones and databases come back as they were that day.</li>' +
+              '<li>It fails, changing nothing, if the username or a domain is taken on this server.</li>' +
+              '<li>The archive is kept either way.</li><li>The job starts within a minute.</li></ul>'
+      }).then(function (yes) {
+        if (!yes) return;
+        api('restore_terminated', { user: user, stamp: stamp, date: pick.date }).then(function (res) {
+          if (!res.ok) { toast('bad', res.error); return; }
+          toast('ok', res.message);
+          showTab('restores');
+          refreshState(true);
+        }).catch(function (err) { toast('bad', err.message); });
+      });
+    });
+  }
+
+  function onScanTerminated(btn) {
+    withBusy(btn, api('scan_terminated', { go: '1' })).then(function (res) {
+      if (!res.ok) { toast('bad', res.error); return; }
+      toast('ok', res.message);
+      setTimeout(function () { refreshState(true); refreshLog().catch(function () {}); }, 8000);
+    }).catch(function () {});
+  }
+
   function renderSettings() {
     var c = STATE.config;
     var on = c.ENABLE_USER_RESTORE === '1';
@@ -1026,6 +1220,13 @@ ob_start();
         '<div class="body"><div class="grid">' +
           f('Retention (days)', 'retention_days', c.RETENTION_DAYS || '7', 'number', '7',
             'Backups older than this are deleted from S3 after each nightly run.') +
+          f('Keep terminated accounts (days)', 'terminated_retention', c.TERMINATED_RETENTION_DAYS || '90', 'number', '90',
+            'A terminated account\'s backups are moved out of the retention above and kept this long after termination. 0 keeps them until deleted.') +
+          '<div class="field"><label for="f-final_backup">When an account is terminated</label>' +
+            '<select id="f-final_backup" name="final_backup">' +
+              '<option value="1"' + (c.TERMINATION_FINAL_BACKUP !== '0' ? ' selected' : '') + '>Back it up one last time first</option>' +
+              '<option value="0"' + (c.TERMINATION_FINAL_BACKUP === '0' ? ' selected' : '') + '>Keep only the backups it already has</option>' +
+            '</select><div class="help">Skipped when it already has a backup from today. Termination waits for it, up to the per-account time limit.</div></div>' +
           f('Alert email on failure', 'alert_email', c.ALERT_EMAIL, 'text', 'ops@example.com', 'Blank disables alerts.') +
           f('Staging directory', 'work_dir', c.BACKUP_WORK_DIR || '/root', 'text', '/root',
             'Where account tarballs are built before upload. Point it at a partition with room for your largest account.') +
@@ -1121,6 +1322,7 @@ ob_start();
     renderOverview();
     renderAccounts();
     renderRestores();
+    renderTerminated();
     renderSettings();
     renderLogs();
     paintIcons(document);
@@ -1137,6 +1339,7 @@ ob_start();
       renderAccounts();
     }
     renderRestores();
+    renderTerminated();
     paintIcons(document);
     syncPolling();
   }
@@ -1447,6 +1650,8 @@ ob_start();
     else if (act === 'backup-user') onBackupUser(btn, btn.dataset.user);
     else if (act === 'restore')     openRestore(btn.dataset.user || null);
     else if (act === 'test-s3')     onTestS3(btn);
+    else if (act === 'recreate')    openRecreate(btn.dataset.user, btn.dataset.stamp);
+    else if (act === 'scan-terminated') onScanTerminated(btn);
     else if (act === 'refresh')     withBusy(btn, refreshState()).catch(function () {});
     else if (act === 'refresh-log') withBusy(btn, refreshLog()).catch(function () {});
   });
@@ -1480,7 +1685,7 @@ ob_start();
 
   renderAll();
 
-  showTab = UI.tabs(['overview', 'accounts', 'restores', 'settings', 'logs'], function (name) {
+  showTab = UI.tabs(['overview', 'accounts', 'restores', 'terminated', 'settings', 'logs'], function (name) {
     if (name === 'logs') {
       var pre = $('sky-log');
       if (pre) pre.scrollTop = pre.scrollHeight;

@@ -25,6 +25,7 @@ mkdir -p "$OUT_DIR"
 # are not needed on a server.
 FILES=(
   VERSION
+  bin/archive-terminated.sh
   bin/backup-all.sh
   bin/backup-user.sh
   bin/deploy.sh
@@ -35,6 +36,7 @@ FILES=(
   bin/s3-lib.sh
   bin/s3-test.sh
   bin/self-update.sh
+  bin/termination-hook.sh
   etc/cron/skyserver-backup
   etc/logrotate/skyserver-backup
   etc/skyserver-backup.conf.example

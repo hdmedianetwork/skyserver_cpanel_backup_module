@@ -15,8 +15,16 @@ cron (root, daily)
        │     ├─ write /var/spool/skyserver-backup/manifests/<user>.json
        │     └─ bin/publish-manifest.sh <user>   → hands that manifest to
        │           the account (0640 root:<user>, plus a copy in its home)
-       └─ bin/retention-cleanup.sh                → deletes S3 objects
-                                                     older than RETENTION_DAYS
+       └─ bin/retention-cleanup.sh
+             ├─ bin/archive-terminated.sh --scan  → moves the backups of accounts
+             │                                       no longer on the server to
+             │                                       terminated/<user>/<stamp>/
+             ├─ deletes backups/ objects older than RETENTION_DAYS
+             └─ deletes terminated/ archives older than TERMINATED_RETENTION_DAYS
+
+WHM account termination (Accounts::Remove hook → bin/termination-hook.sh)
+  ├─ pre:  final backup if the account has none from today
+  └─ post: bin/archive-terminated.sh --user <user>, in the background
 
 cPanel user dashboard
   └─ plugin/index.live.php ("SkyServer Backup Manager")
@@ -41,6 +49,7 @@ cron (root, every minute)
        ├─ verifies the request's user/database actually belongs to that account
        ├─ downloads the backup from S3
        └─ runs /scripts/restorepkg (full account) or `mysql` import (single DB)
+          — or, for a terminated account, recreates it from its archive
 ```
 
 The end-user plugin never gets S3 or root access — it only writes a
@@ -211,4 +220,54 @@ as root, picks up and re-validates.
 ```
 s3://<bucket>/backups/<cpanel-user>/<YYYY-MM-DD>/full-account.tar.gz
 s3://<bucket>/backups/<cpanel-user>/<YYYY-MM-DD>/databases/<db>.sql.gz
+
+# an account that was terminated, archived at <stamp> (UTC, YYYYMMDDTHHMMSS)
+s3://<bucket>/terminated/<cpanel-user>/<stamp>/<YYYY-MM-DD>/full-account.tar.gz
+s3://<bucket>/terminated/<cpanel-user>/<stamp>/<YYYY-MM-DD>/databases/<db>.sql.gz
 ```
+
+## Terminated accounts
+
+A terminated account never gets another backup, so under the ordinary
+retention its last one used to be deleted `RETENTION_DAYS` after
+termination — usually before anyone asked for it back. And because backups
+are keyed by username, a new account created under the same name inherited
+the old one's manifest: its owner could see, download and restore the
+previous customer's backups.
+
+So when an account goes, its backups go somewhere else:
+
+1. **Before termination** the `Accounts::Remove` *pre* hook takes a final
+   backup, unless the account already has one from today, and notes its
+   domain, owner and plan (`TERMINATION_FINAL_BACKUP=0` turns the backup off).
+   The hook is non-blocking: nothing it does can stop a termination.
+2. **After termination** the *post* hook starts `archive-terminated.sh --user`
+   in the background. It moves `backups/<user>/` to
+   `terminated/<user>/<stamp>/`, writes a record to
+   `/var/spool/skyserver-backup/terminated/<user>--<stamp>.json` (`0600`,
+   in a `0700` directory) and removes the account's manifest.
+3. **Every night**, before anything is expired, `archive-terminated.sh --scan`
+   does the same for any account that has backups but is not on the server —
+   accounts terminated before this existed, or whose hook did not finish. An
+   interrupted move is finished under the same stamp.
+4. Archives are kept `TERMINATED_RETENTION_DAYS` (default 90) after the stamp;
+   `0` keeps them until deleted by hand.
+
+An account is only ever treated as terminated after `whmapi1 listaccts`
+answered successfully and named at least one account. If WHM cannot say,
+nothing is archived and nothing under `backups/` is expired that night. A
+scan that would archive more than half the accounts (or more than five) stops
+and asks for `--force`, so a WHM that returns a partial list cannot move most
+of the bucket.
+
+**Restoring** — WHM → **Terminated** lists every archive. *Restore account*
+queues a `recreate` request; the worker checks that no account with that name
+exists now, fetches the chosen day's tarball from the archive and runs
+`/scripts/restorepkg` without `--force`, so a username or domain that is taken
+makes it fail without changing anything. The archive is kept afterwards.
+Only a request file owned by root (the WHM panel) can ask for this.
+
+**Who wrote a request** — the queue is a drop box every account can write to,
+so the worker trusts the file's owner, not its contents: a file written by an
+account is honoured only for that same account, and only root can mark a
+request as an admin one.

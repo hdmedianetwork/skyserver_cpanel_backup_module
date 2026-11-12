@@ -39,6 +39,7 @@
 | **Any S3 storage** | Amazon S3, Wasabi, Backblaze B2, IDrive e2, DigitalOcean Spaces, MinIO, Contabo, and more. A built-in connection test checks write access, not just listing. |
 | **Verified before upload** | Every tarball is checked with `tar -tzf` and every dump with `gzip -t` before it is uploaded. A backup that won't extract is never stored. |
 | **Restore from WHM** | Restore a whole account or a single database from any stored date, behind a two-step confirmation. |
+| **Restore terminated accounts** | A terminated account's backups are moved out of the nightly retention and kept (90 days by default), and the account can be recreated from any of them in WHM → **Terminated**. A final backup is taken as the account is terminated, and a new account with the same username never sees the old one's backups. |
 | **Customer self-service** | A **Backup Manager** page in every cPanel account. Customers download any backup through a one-hour private link, and can restore their own if you allow it. |
 | **Live progress** | Admins watch a run move account by account (*90 of 187, now on sharmaho*). Customers see real percentages while their backup is packaged, uploaded, fetched or restored. |
 | **Survives bad nights** | Per-account time limit, resume after a crash or reboot, retry a single failed account, and a disk-space guard that never fills the server. |
@@ -123,6 +124,7 @@ curl -sSL https://backup.gosecureserver.in/install.sh | head -3   # must start w
 | `/etc/cron.d/skyserver-backup` | Nightly backup at 02:00, and the restore queue every minute |
 | `/etc/logrotate.d/skyserver-backup` | Weekly rotation of `/var/log/skyserver-backup.log` |
 | WHM → Plugins | **SkyServer Backup Manager** (admin dashboard) |
+| `Accounts::Remove` hook | A final backup before an account is terminated, and its backups archived after |
 | cPanel → Files | **SkyServer Backup Manager** (customer page, every theme) |
 
 ## Configuration
@@ -138,6 +140,8 @@ Everything is editable in **WHM → Backup Manager → Settings**, which writes
 | `S3_ADDRESSING_STYLE` | automatic | `path` or `virtual`. Path style is chosen automatically for custom endpoints and for bucket names that contain a dot. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | — | Keys limited to this bucket |
 | `RETENTION_DAYS` | `7` | Backups older than this are deleted from S3 after each run |
+| `TERMINATED_RETENTION_DAYS` | `90` | How long a terminated account's backups are kept after termination. `0` keeps them until deleted |
+| `TERMINATION_FINAL_BACKUP` | `1` | Back an account up one last time as it is terminated (skipped if it has one from today) |
 | `BACKUP_WORK_DIR` | `/root` | Where account tarballs are staged before upload |
 | `BACKUP_WORK_DIR_FALLBACK` | `1` | Stage on another filesystem with room if the work dir is too small |
 | `DISK_SAFETY_MARGIN_MB` | `2048` | Skip an account rather than leave less than this free |
@@ -187,6 +191,7 @@ cd /opt/skyserver-backup-module/bin
 ./backup-all.sh               # back up every account
 ./backup-all.sh --resume      # continue an interrupted run; skips accounts already done today
 ./backup-user.sh <user>       # back up one account
+./archive-terminated.sh --scan  # archive backups of accounts no longer on this server
 ./s3-test.sh                  # check the bucket and credentials
 ./self-update.sh check|apply  # check for, or install, an update
 ```

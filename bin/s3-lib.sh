@@ -51,6 +51,14 @@ source "$SKYSERVER_CONF"
 : "${S3_BUCKET:?S3_BUCKET not set in $SKYSERVER_CONF}"
 : "${AWS_DEFAULT_REGION:=us-east-1}"
 : "${RETENTION_DAYS:=7}"
+# Backups of a terminated account are moved to terminated/<user>/<stamp>/
+# and kept this many days from the day it was terminated; 0 keeps them until
+# they are deleted by hand. See bin/archive-terminated.sh.
+: "${TERMINATED_RETENTION_DAYS:=90}"
+case "$TERMINATED_RETENTION_DAYS" in ''|*[!0-9]*) TERMINATED_RETENTION_DAYS=90 ;; esac
+# Back up an account one last time when it is terminated, unless it already
+# has a backup from today. See bin/termination-hook.sh.
+: "${TERMINATION_FINAL_BACKUP:=1}"
 # Defaults keep configs written before these options existed working.
 : "${BACKUP_WORK_DIR:=/root}"
 : "${DISK_SAFETY_MARGIN_MB:=2048}"

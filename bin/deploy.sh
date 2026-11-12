@@ -36,6 +36,11 @@ mkdir -p "$SPOOL_DIR"/manifests "$SPOOL_DIR"/restore-requests "$SPOOL_DIR"/resto
 chmod 751 "$SPOOL_DIR" "$SPOOL_DIR/manifests" "$SPOOL_DIR/restore-status" \
           "$SPOOL_DIR/downloads" "$SPOOL_DIR/progress"
 
+# Records of terminated accounts' archives. Root only: they name every
+# customer who has left and what their backups held.
+mkdir -p "$SPOOL_DIR/terminated"
+chmod 700 "$SPOOL_DIR/terminated"
+
 # The restore queue is a drop box: accounts have to be able to create a
 # request file in it, and the sticky bit stops them removing or replacing
 # anyone else's.
@@ -173,6 +178,33 @@ else
   log "  WARNING: /usr/local/cpanel/bin/register_appconfig not found on this server."
 fi
 
+log "Registering the account termination hook..."
+# Accounts::Remove, both stages: a final backup before the account goes,
+# and its backups archived out of retention's way after. Removed first so a
+# re-run never registers it twice.
+MANAGE_HOOKS=/usr/local/cpanel/bin/manage_hooks
+HOOK_SCRIPT="$INSTALL_DIR/bin/termination-hook.sh"
+if [ -x "$MANAGE_HOOKS" ]; then
+  HOOK_OK=1
+  for STAGE in pre post; do
+    "$MANAGE_HOOKS" delete script "$HOOK_SCRIPT" --manual --category Whostmgr \
+      --event Accounts::Remove --stage "$STAGE" >/dev/null 2>&1 || true
+    if ! HOOK_OUT="$("$MANAGE_HOOKS" add script "$HOOK_SCRIPT" --manual --category Whostmgr \
+           --event Accounts::Remove --stage "$STAGE" 2>&1)"; then
+      HOOK_OK=0
+      log "  WARNING: could not register the $STAGE-termination hook:"
+      printf '    %s\n' "$HOOK_OUT"
+    fi
+  done
+  if [ "$HOOK_OK" = "1" ]; then
+    log "  Termination hook registered."
+  else
+    log "  Terminated accounts are still archived by the nightly run, just without a final backup."
+  fi
+else
+  log "  WARNING: $MANAGE_HOOKS not found — terminated accounts are archived by the nightly run only."
+fi
+
 log "Rebuilding cPanel UI caches..."
 # rebuildnavigations is gone as of cPanel 134, and sprites live under either
 # scripts/ or bin/ depending on the version.
@@ -180,6 +212,16 @@ if [ -x /usr/local/cpanel/scripts/rebuild_sprites ]; then
   /usr/local/cpanel/scripts/rebuild_sprites >/dev/null 2>&1 || true
 elif [ -x /usr/local/cpanel/bin/rebuild_sprites ]; then
   /usr/local/cpanel/bin/rebuild_sprites >/dev/null 2>&1 || true
+fi
+
+# Accounts terminated before this version had no hook to archive them, and
+# their last backups are on the ordinary retention clock. Archive them now,
+# in the background, rather than at the next nightly run — which for some of
+# them would be too late.
+if [ -f "$CONF_FILE" ] && ! grep -q 'your-bucket-name' "$CONF_FILE"; then
+  log "Archiving backups of accounts no longer on this server (in the background)..."
+  setsid nohup "$INSTALL_DIR/bin/archive-terminated.sh" --scan \
+    >> /var/log/skyserver-backup.log 2>&1 < /dev/null &
 fi
 
 log "Deploy complete (version $(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo unknown))."

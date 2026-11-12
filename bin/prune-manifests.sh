@@ -39,6 +39,10 @@ fi
 for MANIFEST_FILE in "$MANIFEST_DIR"/*.json; do
   [ -f "$MANIFEST_FILE" ] || continue
   USER="$(basename "$MANIFEST_FILE" .json)"
+  # An account that is no longer on this server is bin/archive-terminated.sh's
+  # to deal with. Trimming its manifest here would forget backups that are
+  # about to be moved out of retention's way and kept.
+  getent passwd "$USER" >/dev/null 2>&1 || continue
   BEFORE="$(jq 'length' "$MANIFEST_FILE" 2>/dev/null || echo 0)"
   if ! jq --arg from "$KEEP_FROM" '[.[] | select(.date >= $from)]' \
        "$MANIFEST_FILE" > "$MANIFEST_FILE.tmp" 2>/dev/null; then
